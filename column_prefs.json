@@ -1,0 +1,9 @@
+{
+  "compare_column": "Наименование",
+  "value_column": "Количество",
+  "subsection_column": "Подраздел",
+  "extra_column": [
+    "Единица измерения",
+    "Код расценки"
+  ]
+}
