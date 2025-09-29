@@ -323,7 +323,10 @@ class ProcessWindow(QWidget):
     def _show_result(self, df: pd.DataFrame):
         self._df = df
         TableDialog(df, "Результат обработки").exec_()
-        for b in (self.btn_plain, self.btn_fact): b.setEnabled(True)
+
+        for b in (self.btn_plain, self.btn_fact):  # ✅ добавили btn_diff
+            b.setEnabled(True)
+
         self.widget.btn_run.setEnabled(True)
 
     # ------------ обычный Excel ------------
@@ -365,6 +368,11 @@ class CompareWindow(QWidget):
         self.btn_html    = QPushButton("↗  HTML-отчёт")
         self.btn_excel   = QPushButton("↗  Excel-отчёт")
         self.btn_missing = QPushButton("↗  TXT «Отсутствующие»")
+        self.btn_diff = QPushButton("Excel исключаемые/добавляемые")
+        self.btn_diff.setEnabled(False)
+        self.btn_diff.clicked.connect(self._save_diff)
+
+
         for b in (self.btn_html, self.btn_excel, self.btn_missing):
             b.setEnabled(False)
 
@@ -377,6 +385,7 @@ class CompareWindow(QWidget):
         lay.addWidget(self.btn_html)
         lay.addWidget(self.btn_excel)
         lay.addWidget(self.btn_missing)
+        lay.addWidget(self.btn_diff)
 
         self._cmp = None          # SmetaComparator
         self._col_order = None    # порядок колонок
@@ -466,10 +475,27 @@ class CompareWindow(QWidget):
         dlg_layout.addWidget(tabs)
         dlg.exec_()
 
-        for b in (self.btn_html, self.btn_excel, self.btn_missing):
+        for b in (self.btn_html, self.btn_excel, self.btn_missing, self.btn_diff):
             b.setEnabled(True)
         self.widget.btn_run.setEnabled(True)
 
+    def _save_diff(self):
+        if not hasattr(self, "_cmp") or self._cmp is None:
+            QMessageBox.warning(self, "Ошибка", "Сначала нужно сравнить сметы.")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить Excel",
+            "added_removed.xlsx",
+            "Excel (*.xlsx)"
+        )
+        if path:
+            try:
+                self._cmp.export_added_removed_positions(path, value_col="Количество")
+                QMessageBox.information(self, "Готово", f"Файл сохранён:\n{path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка", str(e))
     # ────────────────────────────────────────────────
     #  экспортные кнопки
     # ────────────────────────────────────────────────
