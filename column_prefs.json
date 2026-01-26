@@ -1,6 +1,9 @@
 {
   "compare_column": "Наименование",
-  "value_column": "Количество",
+  "value_column": [
+    "Количество",
+    "Стоимость"
+  ],
   "subsection_column": "Подраздел",
   "extra_column": [
     "Единица измерения",

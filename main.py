@@ -71,38 +71,53 @@ def _save_prefs(prefs: dict):
         pass
 
 
+from typing import List, Tuple, Optional
+from PyQt5.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
+    QListWidget, QListWidgetItem, QDialogButtonBox
+)
+
+
 class ColumnSelectDialog(QDialog):
     """Диалог выбора колонок с запоминанием последнего набора."""
 
     def __init__(self, columns: List[str], parent=None):
         super().__init__(parent)
         self.setWindowTitle("Выбор колонок для сравнения")
-        self.resize(420, 380)
+        self.resize(450, 500)
 
         layout = QVBoxLayout(self)
 
-        # --- compare_column ---
-        self.cb_compare = QComboBox(); self.cb_compare.addItems(columns)
+        # --- compare_column (одиночный выбор) ---
+        self.cb_compare = QComboBox()
+        self.cb_compare.addItems(columns)
         layout.addLayout(self._row("Колонка-ключ (compare_column):", self.cb_compare))
 
-        # --- value_column ---
-        self.cb_value = QComboBox(); self.cb_value.addItems(columns)
-        layout.addLayout(self._row("Колонка стоимости (value_column):", self.cb_value))
+        # --- value_column (множественный выбор) ---
+        layout.addWidget(QLabel("Колонки стоимости (value_column):"))
+        self.value_list = QListWidget()
+        self.value_list.setSelectionMode(QListWidget.MultiSelection)
+        for c in columns:
+            self.value_list.addItem(QListWidgetItem(c))
+        layout.addWidget(self.value_list)
 
         # --- subsection_column (необ.) ---
-        self.cb_sub = QComboBox(); self.cb_sub.addItems([""] + columns)
+        self.cb_sub = QComboBox()
+        self.cb_sub.addItems([""] + columns)
         layout.addLayout(self._row("Подраздел (subsection_column):", self.cb_sub))
 
-        # --- extra_column (множество) ---
+        # --- extra_column (множественный выбор) ---
         layout.addWidget(QLabel("Доп. колонки (extra_column):"))
-        self.extra_list = QListWidget(); self.extra_list.setSelectionMode(QListWidget.MultiSelection)
+        self.extra_list = QListWidget()
+        self.extra_list.setSelectionMode(QListWidget.MultiSelection)
         for c in columns:
             self.extra_list.addItem(QListWidgetItem(c))
         layout.addWidget(self.extra_list)
 
         # --- OK / Cancel ---
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.accepted.connect(self._on_accept); btns.rejected.connect(self.reject)
+        btns.accepted.connect(self._on_accept)
+        btns.rejected.connect(self.reject)
         layout.addWidget(btns)
 
         # применяем сохранённые значения (если колонки существуют)
@@ -111,13 +126,19 @@ class ColumnSelectDialog(QDialog):
     # --------------------------------------------------------------
     def _apply_saved(self, columns: List[str]):
         prefs = _load_prefs()
-        if not prefs: return
+        if not prefs:
+            return
 
         if prefs.get("compare_column") in columns:
             self.cb_compare.setCurrentText(prefs["compare_column"])
 
-        if prefs.get("value_column") in columns:
-            self.cb_value.setCurrentText(prefs["value_column"])
+        saved_values = prefs.get("value_column", [])
+        if isinstance(saved_values, str):
+            saved_values = [saved_values]
+        for i in range(self.value_list.count()):
+            item = self.value_list.item(i)
+            if item.text() in saved_values:
+                item.setSelected(True)
 
         if prefs.get("subsection_column") in columns:
             self.cb_sub.setCurrentText(prefs["subsection_column"] or "")
@@ -133,7 +154,7 @@ class ColumnSelectDialog(QDialog):
         # сохраняем выбор
         prefs = {
             "compare_column": self.cb_compare.currentText(),
-            "value_column":   self.cb_value.currentText(),
+            "value_column": [i.text() for i in self.value_list.selectedItems()],
             "subsection_column": self.cb_sub.currentText() or None,
             "extra_column": [i.text() for i in self.extra_list.selectedItems()],
         }
@@ -143,17 +164,22 @@ class ColumnSelectDialog(QDialog):
     # --------------------------------------------------------------
     @staticmethod
     def _row(label: str, widget):
-        box = QHBoxLayout(); box.addWidget(QLabel(label)); box.addWidget(widget)
+        box = QHBoxLayout()
+        box.addWidget(QLabel(label))
+        box.addWidget(widget)
         return box
 
     # результат для вызывающего окна
-    def get_selection(self) -> Tuple[str, str, List[str], Optional[str]]:
+    def get_selection(self) -> Tuple[str, List[str], List[str], Optional[str]]:
         extras = [i.text() for i in self.extra_list.selectedItems()]
+        value_cols = [i.text() for i in self.value_list.selectedItems()]
         subcol = self.cb_sub.currentText() or None
-        return (self.cb_compare.currentText(),
-                self.cb_value.currentText(),
-                extras,
-                subcol)
+        return (
+            self.cb_compare.currentText(),
+            value_cols,
+            extras,
+            subcol
+        )
 # ╭──────────────────╮
 # │  Поток обработки │
 # ╰──────────────────╯
@@ -275,6 +301,7 @@ class FileListWidget(QWidget):
             self.listw.takeItem(self.listw.row(item))
 
     def _emit_run(self):
+
         files = [self.listw.item(i).text() for i in range(self.listw.count())]
         self.run_requested.emit(files)
 
@@ -330,7 +357,7 @@ class ProcessWindow(QWidget):
         self.widget.btn_run.setEnabled(True)
 
     # ------------ обычный Excel ------------
-    def _save_plain(self):
+    def _save_plain2(self):
         if self._df is None: return
         path, _ = QFileDialog.getSaveFileName(self, "Excel-файл",
                                               "processed.xlsx", "Excel (*.xlsx)")
@@ -340,6 +367,58 @@ class ProcessWindow(QWidget):
                 QMessageBox.information(self, "Готово", path)
             except Exception as e:
                 QMessageBox.critical(self, "Ошибка", str(e))
+
+    def _save_plain(self):
+        if self._df is None:
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Excel-файл", "processed.xlsx", "Excel (*.xlsx)"
+        )
+
+        if not path:
+            return
+
+        try:
+            # Проверяем наличие необходимых столбцов
+            if 'Подраздел' not in self._df.columns or 'Стоимость' not in self._df.columns:
+                QMessageBox.warning(self, "Предупреждение",
+                                    "Отсутствуют необходимые столбцы: 'Подраздел' или 'Стоимость'")
+                return
+
+            # Создаем категориальный тип с порядком первого вхождения
+            self._df['Подраздел_порядок'] = pd.Categorical(
+                self._df['Подраздел'],
+                categories=self._df['Подраздел'].dropna().unique(),
+                ordered=True
+            )
+
+            # Группируем с сохранением порядка
+            sums_by_subsection = self._df.groupby('Подраздел_порядок', observed=True, sort=False)[
+                'Стоимость'].sum().reset_index()
+            sums_by_subsection.columns = ['Подраздел', 'Сумма стоимости']
+
+            # Создаем Excel writer
+            with pd.ExcelWriter(path, engine='openpyxl') as writer:
+                # Сохраняем основной лист (убираем временный столбец)
+                self._df.drop('Подраздел_порядок', axis=1, errors='ignore').to_excel(writer, sheet_name='Данные',
+                                                                                     index=False)
+
+                # Добавляем строку ИТОГО
+                total_sum = sums_by_subsection['Сумма стоимости'].sum()
+                total_row = pd.DataFrame({
+                    'Подраздел': ['ИТОГО(без НДС)'],
+                    'Сумма стоимости': [total_sum]
+                })
+                sums_by_subsection = pd.concat([sums_by_subsection, total_row], ignore_index=True)
+
+                # Сохраняем лист с суммами
+                sums_by_subsection.to_excel(writer, sheet_name='Суммы по подразделу', index=False)
+
+            QMessageBox.information(self, "Готово", f"Файл сохранен:\n{path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить файл:\n{str(e)}")
 
     # ------------ Excel с формулами ------------
     def _save_fact(self):

@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import logging
 import warnings
+import re
 
 
 # Настройка логирования
@@ -82,6 +83,35 @@ class Smeta:
 
             # Если нашли новую позицию
             #if (isinstance(cell_a, (int, float)) or (isinstance(cell_a, str) and cell_a.isdigit())) and cell_b:
+
+            def _is_position_number(self, value):
+                if value is None:
+                    return False
+
+                # Число (int или float)
+                if isinstance(value, (int, float)):
+                    return True
+
+                if isinstance(value, str):
+                    v = value.strip()
+
+                    # Оборудование
+                    if "\nО" in v:
+                        return True
+
+                    # Заменяем запятую на точку (97,1 → 97.1)
+                    v = v.replace(",", ".")
+
+                    # 1 | 1.1 | 97.1 | 10.25
+                    if re.fullmatch(r"\d+(\.\d+)?", v):
+                        return True
+
+                return False
+
+            #if is_position_number and cell_b:
+            print('тут')
+            if self._is_position_number(cell_a): print(cell_a)
+            if self._is_position_number(cell_a) and cell_b:
             if (isinstance(cell_a, (int, float)) or (isinstance(cell_a, str) and cell_a.isdigit())) or (isinstance(cell_a, str) and "\nО" in cell_a) and cell_b:
                 # Если уже обрабатывалась предыдущая позиция, добавляем её в DataFrame
                 if parsing_position:

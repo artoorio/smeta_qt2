@@ -74,6 +74,30 @@ class Smeta:
             "Вспомогательные ресурсы", "Оборудование"
         ])
 
+    def _is_position_number(self, value) -> bool:
+        if value is None:
+            return False
+
+        # int / float → всегда позиция
+        if isinstance(value, (int, float)):
+            return True
+
+        if isinstance(value, str):
+            v = value.strip()
+
+            # оборудование
+            if "\nО" in v:
+                return True
+
+            # локаль: 97,1 → 97.1
+            v = v.replace(",", ".")
+
+            # 1 | 1.1 | 97.1 | 10.25
+            if re.fullmatch(r"\d+(\.\d+)?", v):
+                return True
+
+        return False
+
     # ───── 2.1 Найти первую строку-раздел ─────
     def _find_section_start_and_maybe_switch_columns(self) -> Optional[int]:
         """Возвратить строку первого 'Раздел N.' и, если нужно, скорректировать cfg."""
@@ -158,6 +182,8 @@ class Smeta:
         parsing_position = False
         position_data: Dict[str, Any] = {}
 
+
+
         for row in rows:
             cell_a, cell_b, cell_c = row[pos_c], row[code_c], row[name_c]
 
@@ -178,6 +204,9 @@ class Smeta:
                  (isinstance(cell_a, str) and (cell_a.isdigit() or "\nО" in cell_a)))
                 and cell_b
             )
+
+            is_position = self._is_position_number(cell_a) and bool(cell_b)
+
             if is_position:
                 if parsing_position:
                     self.data = pd.concat([self.data, pd.DataFrame([position_data])])
