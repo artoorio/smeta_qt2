@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 from typing import List
+import logging
 
 import pandas as pd
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
@@ -51,6 +52,21 @@ from PyQt5.QtWidgets import (
 )
 
 _PREFS_FILE = os.path.join(os.path.dirname(__file__), "column_prefs.json")
+_MATERIALS_PREFS = os.path.join(os.path.dirname(__file__), "materials_prefs.json")
+
+def load_materials_path() -> str | None:
+    if os.path.exists(_MATERIALS_PREFS):
+        try:
+            with open(_MATERIALS_PREFS, "r", encoding="utf-8") as f:
+                return json.load(f).get("materials_path")
+        except Exception:
+            pass
+    return None
+
+
+def save_materials_path(path: str):
+    with open(_MATERIALS_PREFS, "w", encoding="utf-8") as f:
+        json.dump({"materials_path": path}, f, ensure_ascii=False, indent=2)
 
 
 def _load_prefs() -> dict:
@@ -187,22 +203,19 @@ class ProcessWorker(QThread):
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(pd.DataFrame)
 
-    def __init__(self, files: List[str]):
+
+
+    def __init__(self, files: List[str], materials_path: str | None):
         super().__init__()
         self.files = files
+        self.materials_path = materials_path
 
     def run(self):
         merged = []
-        total = len(self.files)
-        for idx, path in enumerate(self.files, 1):
-            try:
-                df = process_smeta(path)
-                merged.append(df)
-            except Exception as e:
-                print(f"⚠ {path}: {e}")
-            self.progress.emit(int(idx / total * 100), Path(path).name)
-        if merged:
-            self.finished.emit(pd.concat(merged, ignore_index=True))
+        for path in self.files:
+            df = process_smeta(path, self.materials_path)
+            merged.append(df)
+        self.finished.emit(pd.concat(merged, ignore_index=True))
 
 
 # ╭──────────────────╮
@@ -328,8 +341,17 @@ class ProcessWindow(QWidget):
         self.btn_plain.clicked.connect(self._save_plain)
         self.btn_fact.clicked.connect(self._save_fact)
 
+        # выбор файла с матералами
+        self.btn_materials = QPushButton("Файл цен на материалы (опционально)")
+        self.btn_materials.clicked.connect(self._select_materials_file)
+
+
+        self.materials_path = load_materials_path()
+
         lay = QVBoxLayout(self)
         lay.addWidget(self.widget)
+        lay.addWidget(self.btn_materials)
+
         lay.addWidget(self.btn_plain)
         lay.addWidget(self.btn_fact)
 
@@ -342,9 +364,21 @@ class ProcessWindow(QWidget):
             return
         self.widget.btn_run.setEnabled(False)
         for b in (self.btn_plain, self.btn_fact): b.setEnabled(False)
-        self.worker = ProcessWorker(files)
+        self.worker = ProcessWorker(files, self.materials_path)
         self.worker.finished.connect(self._show_result)
         self.worker.start()
+
+    # ------------ выбор файла с ценами на материалы ------------
+    def _select_materials_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Файл цен на материалы",
+            "",
+            "Excel (*.xlsx *.xls)"
+        )
+        if path:
+            self.materials_path = path
+            save_materials_path(path)
 
     # ------------ результат ------------
     def _show_result(self, df: pd.DataFrame):
@@ -414,6 +448,9 @@ class ProcessWindow(QWidget):
 
                 # Сохраняем лист с суммами
                 sums_by_subsection.to_excel(writer, sheet_name='Суммы по подразделу', index=False)
+                rows = materials_summary_by_object(self._df)
+                rows.to_excel(writer, sheet_name='Сводка по материалам', index=False)
+                #logging.info(rows[1])
 
             QMessageBox.information(self, "Готово", f"Файл сохранен:\n{path}")
 
@@ -431,6 +468,40 @@ class ProcessWindow(QWidget):
                 QMessageBox.information(self, "Готово", path)
             except Exception as e:
                 QMessageBox.critical(self, "Ошибка", str(e))
+
+
+def materials_summary_by_object(df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+
+    for obj, g in df.groupby("Название объекта"):
+
+        cost = g["Стоимость"].sum()
+        smet_mat = g["Материалы"].sum()
+        fakt_mat = g["Стоимость материала, всего"].sum()
+
+        anal_mat = g.loc[
+            g["Стоимость материала, всего"] > 0,
+            "Материалы"
+        ].sum()
+
+        rows.append({
+            "Название объекта": obj,
+            "Стоимость": cost,
+            "Материалы": smet_mat,
+            "Фактические материалы": fakt_mat,
+            "Проанализировано материалов": anal_mat/smet_mat
+        })
+
+        if smet_mat > 0:
+            logging.info(
+                "[%s] Материалы: %.2f | Факт: %.2f | Анализ: %.2f%%",
+                obj,
+                smet_mat,
+                fakt_mat,
+                anal_mat * 100 / smet_mat
+            )
+
+    return pd.DataFrame(rows)
 # ╭──────────────────╮
 # │  Окно сравнения  │
 # ╰──────────────────╯

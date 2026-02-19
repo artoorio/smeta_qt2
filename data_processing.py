@@ -10,6 +10,7 @@ import logging
 import warnings
 from dataclasses import dataclass
 from typing import Optional, Dict, List, Any
+from PyQt5.QtWidgets import QMessageBox
 
 import pandas as pd
 import openpyxl
@@ -113,8 +114,8 @@ class Smeta:
                         column=column_index_from_string('H')
                     ).value
                     if str(h_above).strip() == '4':
-                        logging.info("Маркер '4' найден — переключаемся на H/I/P.")
-                        self.cfg.unit, self.cfg.qty, self.cfg.cost = 'H', 'I', 'P'
+                        logging.info("Маркер '4' найден — переключаемся на H/K/P.")
+                        self.cfg.unit, self.cfg.qty, self.cfg.cost = 'H', 'K', 'P'
                 return section_row
         return None
 
@@ -124,6 +125,7 @@ class Smeta:
     def _process_cost_details(self, row: List[Any]) -> Dict[str, Optional[float]]:
         cost_mapping = {
             "ОТ":  "ФОТ",
+            "ФОТ": "ФОТ",
             "ЭМ":  "ЭМ",
             "М":   "Материалы",
             "ОТм": "ОТм",
@@ -151,7 +153,8 @@ class Smeta:
 
         # 3) обычные ключи
         for prefix, target in cost_mapping.items():
-            if text.startswith(prefix):
+            # Проверяем, что после префикса идёт пробельный символ или конец строки
+            if re.match(rf"^{re.escape(prefix)}(\s|$)", text):
                 details[target] = cost
                 break
         return details
@@ -258,7 +261,7 @@ class Smeta:
 
 
 # ──────────────────  3. ФУНКЦИЯ-ОБЁРТКА ДЛЯ GUI  ──────────────────
-def process_smeta(path: str) -> pd.DataFrame:
+def process_smeta2(path: str) -> pd.DataFrame:
     """Вызывается из main.py; возвращает DataFrame для GUI."""
     fname = os.path.basename(path)
     try:
@@ -274,3 +277,72 @@ def process_smeta(path: str) -> pd.DataFrame:
     except Exception as exc:
         logging.error("Ошибка при обработке '%s': %s", fname, exc)
         raise
+
+def process_smeta(path: str, materials_path: str | None = None) -> pd.DataFrame:
+    fname = os.path.basename(path)
+
+    sm = Smeta(path)
+    sm.parse()
+    df = sm.data
+
+    if materials_path:
+        try:
+            prices = load_material_prices(materials_path)
+
+            df = df.merge(
+                prices,
+                on="Код расценки",
+                how="left"
+            )
+
+            df["Стоимость материала, всего"] = (
+                df["Стоимость материала, за ед."] * df["Количество"]
+            )
+
+            smet_mat = df['Материалы'].sum()
+            fakt_mat = df['Стоимость материала, всего'].sum()
+            anal_mat = df['Материалы'][df['Стоимость материала, всего'] > 0].sum()
+            logging.info(smet_mat)
+            logging.info(fakt_mat)
+            logging.info(anal_mat/smet_mat)
+
+
+
+
+
+
+
+        except Exception as e:
+            logging.warning(
+                "Не удалось применить цены материалов (%s): %s",
+                materials_path, e
+            )
+
+    logging.info("∑ Стоимость по '%s': %.2f", fname, df["Стоимость"].sum())
+    df['Название объекта'] = fname
+    return df
+
+def load_material_prices(path: str) -> pd.DataFrame:
+    df = pd.read_excel(path)
+
+    required = {
+        "Код расценки",
+        "Стоимость"
+    }
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"В файле материалов нет колонок: {missing}")
+
+    # Убираем нулевые, отрицательные и NaN значения
+    df = df.dropna(subset=["Стоимость"])
+    df = df[df["Стоимость"] > 0]  # только положительные цены
+
+    # Убираем дубликаты, оставляя последнее значение
+    df = df.sort_index()
+    df = df.drop_duplicates(subset="Код расценки", keep="last")
+
+    df = df.rename(columns={
+        "Стоимость": "Стоимость материала, за ед."
+    })
+
+    return df[["Код расценки", "Стоимость материала, за ед."]]
