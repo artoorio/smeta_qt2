@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtWidgets import QTabWidget
 import pandas as pd
 from missing_dialog import MissingDialog
+from openpyxl.styles import Alignment
 
 # эти классы уже существуют в вашем main.py
 
@@ -437,6 +438,25 @@ class ProcessWindow(QWidget):
                 # Сохраняем основной лист (убираем временный столбец)
                 self._df.drop('Подраздел_порядок', axis=1, errors='ignore').to_excel(writer, sheet_name='Данные',
                                                                                      index=False)
+                ws = writer.sheets['Данные']
+
+                # ищем колонку "Наименование"
+                name_col = None
+                for i, cell in enumerate(ws[1], 1):
+                    if cell.value == "Наименование":
+                        name_col = i
+                        break
+
+                if name_col:
+                    col_letter = ws.cell(row=1, column=name_col).column_letter
+
+                    # ширина столбца = 80
+                    ws.column_dimensions[col_letter].width = 80
+
+                    # перенос текста во всех строках
+                    for row in ws.iter_rows(min_row=2, min_col=name_col, max_col=name_col):
+                        for cell in row:
+                            cell.alignment = Alignment(wrap_text=True)
 
                 # Добавляем строку ИТОГО
                 total_sum = sums_by_subsection['Сумма стоимости'].sum()
@@ -448,8 +468,11 @@ class ProcessWindow(QWidget):
 
                 # Сохраняем лист с суммами
                 sums_by_subsection.to_excel(writer, sheet_name='Суммы по подразделу', index=False)
-                rows = materials_summary_by_object(self._df)
-                rows.to_excel(writer, sheet_name='Сводка по материалам', index=False)
+                #rows = materials_summary_by_object(self._df)
+                #rows.to_excel(writer, sheet_name='Сводка по материалам', index=False)
+                if self.materials_path and Path(self.materials_path).exists():
+                    rows = materials_summary_by_object(self._df)
+                    rows.to_excel(writer, sheet_name='Сводка по материалам', index=False)
                 #logging.info(rows[1])
 
             QMessageBox.information(self, "Готово", f"Файл сохранен:\n{path}")
@@ -471,6 +494,9 @@ class ProcessWindow(QWidget):
 
 
 def materials_summary_by_object(df: pd.DataFrame) -> pd.DataFrame:
+    required = {"Стоимость материала, всего", "Материалы"}
+    if not required.issubset(df.columns):
+        return pd.DataFrame()
     rows = []
 
     for obj, g in df.groupby("Название объекта"):
