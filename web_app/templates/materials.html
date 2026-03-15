@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <header class="hero">
+    <p class="eyebrow">Smeta Toolkit · Web</p>
+    <h1>Состояние цен на материалы</h1>
+    <p>Таблица собирает строки из базы смет (`smeta.db`) и показывает вклад материалов по каждому коду.</p>
+    <div class="actions">
+      <a class="ghost" href="/">Главная</a>
+      <a class="ghost" href="/process">Обработка</a>
+      <a class="ghost" href="/compare">Сравнение</a>
+    </div>
+  </header>
+
+  <section class="card">
+    <form id="materials-form">
+      <label>
+        Имя файла (откуда берётся строка)
+        <input name="fileName" placeholder="Например, manual.csv" />
+      </label>
+      <label>
+        Код расценки
+        <input name="code" required placeholder="123" />
+      </label>
+      <label>
+        Наименование
+        <input name="name" required placeholder="Материал" />
+      </label>
+      <label>
+        Ед. изм.
+        <input name="unit" required placeholder="м3" />
+      </label>
+      <label>
+        Количество
+        <input name="quantity" type="number" step="any" placeholder="1.0" />
+      </label>
+      <label>
+        Стоимость
+        <input name="cost" type="number" step="any" placeholder="1000" />
+      </label>
+      <label>
+        Стоимость материалов
+        <input name="materials" type="number" step="any" placeholder="800" />
+      </label>
+      <label>
+        Категория
+        <input name="category" placeholder="Материалы" />
+      </label>
+      <button type="submit" class="primary">Добавить в базу</button>
+      <div id="materials-summary" class="summary"></div>
+    </form>
+    <div id="materials-table" class="table-wrapper">
+      <p class="summary">Загрузка данных...</p>
+    </div>
+  </section>
+{% endblock %}

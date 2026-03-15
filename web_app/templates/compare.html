@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <header class="hero">
+    <p class="eyebrow">Smeta Toolkit · Web</p>
+    <h1>Сравнение смет</h1>
+    <p>Выберите проектную и фактическую версии, настройте колонки и получите отчёт/сводку/список отсутствий.</p>
+    <div class="actions">
+      <a class="ghost" href="/">Главная</a>
+      <a class="ghost" href="/process">Обработка</a>
+    </div>
+  </header>
+
+  <section class="card">
+    <form id="compare-form">
+      <label>
+        Проект (первый файл)
+        <input type="file" name="project" accept=".xlsx,.xls" />
+      </label>
+      <label>
+        Факт (второй файл)
+        <input type="file" name="fact" accept=".xlsx,.xls" />
+      </label>
+      <div class="columns-grid">
+        <label>
+          Колонка сравнения
+          <input name="compareColumn" value="Наименование" />
+        </label>
+        <label>
+          Колонка стоимости
+          <input name="valueColumn" value="Стоимость" />
+        </label>
+        <label>
+          «Доп. колонки» (через запятую)
+          <input name="extraColumns" />
+        </label>
+        <label>
+          Подраздел (если есть)
+          <input name="subsectionColumn" value="Подраздел" />
+        </label>
+      </div>
+      <button type="submit" class="primary">Сравнить</button>
+    </form>
+    <div class="actions">
+      <button class="ghost" data-compare-export="html">HTML</button>
+      <button class="ghost" data-compare-export="excel">Excel</button>
+      <button class="ghost" data-compare-export="missing">TXT отсутствия</button>
+      <button class="ghost" data-compare-export="diff">Excel diff</button>
+    </div>
+    <div id="compare-missing" class="missing-card"></div>
+    <div id="compare-detail" class="table-wrapper"></div>
+    <div id="compare-summary-table" class="table-wrapper"></div>
+  </section>
+{% endblock %}

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <header class="hero">
+    <p class="eyebrow">Smeta Toolkit · Web</p>
+    <h1>Обработка смет</h1>
+    <p>Собираем данные из Excel, применяем цены материалов, возвращаем таблицу со строками и стоимостью.</p>
+    <div class="actions">
+      <a class="ghost" href="/">Главная</a>
+      <a class="ghost" href="/compare">Сравнить сметы</a>
+    </div>
+  </header>
+
+  <section class="card">
+    <form id="process-form">
+      <label>
+        Сметы (Excel, можно несколько)
+        <input type="file" name="files" multiple accept=".xlsx,.xls" />
+      </label>
+      <label>
+        Файл цен на материалы (опционально)
+        <input type="file" name="materials" accept=".xlsx,.xls" />
+      </label>
+      <button type="submit" class="primary">Запустить обработку</button>
+    </form>
+    <div class="actions">
+      <button class="ghost" data-export-mode="plain">Скачать Excel</button>
+      <button class="ghost" data-export-mode="fact">Excel с формулами</button>
+    </div>
+    <div id="process-summary" class="summary"></div>
+    <div id="process-table" class="table-wrapper"></div>
+  </section>
+{% endblock %}
