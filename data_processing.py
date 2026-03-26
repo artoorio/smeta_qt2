@@ -28,6 +28,7 @@ warnings.filterwarnings(
 )
 
 SECTION_RE = re.compile(r"^\s*раздел\s+\d+\.\s*.+", re.IGNORECASE)
+SECTION_SPLIT_RE = re.compile(r"^\s*(Раздел\s+\d+)\.?\s*(.*)$", re.IGNORECASE)
 
 CATEGORY_PREFIXES: Dict[str, List[str]] = {
     "Материалы": ["ТССЦ", "ТЦ", "ФССЦ", "ФСБЦ","Прайс","Прайслист"],
@@ -69,11 +70,21 @@ class Smeta:
         logging.info("Карта колонок: %s", self.idx)
 
         self.data = pd.DataFrame(columns=[
-            "Раздел", "Подраздел", "Номер позиции", "Код расценки", "Наименование",
+            "Раздел", "Название раздела", "Подраздел", "Номер позиции", "Код расценки", "Наименование",
             "Категория", "Единица измерения", "Количество", "Стоимость",
             "ФОТ", "ЭМ", "Материалы", "НР", "СП", "ОТм",
             "Вспомогательные ресурсы", "Оборудование"
         ])
+
+    @staticmethod
+    def _split_section(value: Any) -> tuple[str, str]:
+        text = str(value or "").strip()
+        match = SECTION_SPLIT_RE.match(text)
+        if not match:
+            return text, ""
+        section_number = match.group(1).strip()
+        section_title = match.group(2).strip()
+        return section_number, section_title
 
     def _is_position_number(self, value) -> bool:
         if value is None:
@@ -181,6 +192,7 @@ class Smeta:
         unit_c, qty_c, cost_c = self.idx['unit'], self.idx['qty'], self.idx['cost']
 
         current_section = None
+        current_section_title = None
         current_subsection = None
         parsing_position = False
         position_data: Dict[str, Any] = {}
@@ -192,8 +204,8 @@ class Smeta:
 
             # --- новый Раздел ---
             if isinstance(cell_a, str) and SECTION_RE.match(cell_a):
-                current_section = cell_a.strip()
-                current_subsection = current_section
+                current_section, current_section_title = self._split_section(cell_a)
+                current_subsection = current_section_title or current_section
                 continue
 
             # --- новый Подраздел ---
@@ -218,6 +230,7 @@ class Smeta:
                 category = self._get_category(cell_a, cell_b)
                 position_data = {
                     "Раздел": current_section,
+                    "Название раздела": current_section_title,
                     "Подраздел": current_subsection,
                     "Номер позиции": cell_a,
                     "Код расценки": cell_b,

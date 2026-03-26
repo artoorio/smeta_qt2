@@ -5,6 +5,8 @@ from openpyxl.styles import PatternFill, Alignment, Border, Side
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.utils import get_column_letter
 
+from export_formatting import apply_readable_sheet_layout
+
 
 def export_with_fact_formula(df: pd.DataFrame, output_path: str = "output.xlsx"):
     df = df.copy()
@@ -77,7 +79,7 @@ def export_with_fact_formula(df: pd.DataFrame, output_path: str = "output.xlsx")
                 ws.cell(row=excel_row - 1, column=col).border = bottom_border
 
     # ---------- ширина колонок ----------
-    ws.column_dimensions[get_column_letter(name_col_idx)].width = 40
+    apply_readable_sheet_layout(ws, df)
     ws.column_dimensions[get_column_letter(headers.index("Код расценки") + 1)].width = 15
     ws.column_dimensions[get_column_letter(cat_col + 1)].width = 10
 

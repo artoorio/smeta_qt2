@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 from typing import List
 import logging
+from datetime import datetime
 
 import pandas as pd
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
@@ -23,7 +24,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtWidgets import QTabWidget
 import pandas as pd
 from missing_dialog import MissingDialog
-from openpyxl.styles import Alignment
+from export_formatting import apply_readable_sheet_layout, dataframe_to_readable_html
 
 # эти классы уже существуют в вашем main.py
 
@@ -54,6 +55,13 @@ from PyQt5.QtWidgets import (
 
 _PREFS_FILE = os.path.join(os.path.dirname(__file__), "column_prefs.json")
 _MATERIALS_PREFS = os.path.join(os.path.dirname(__file__), "materials_prefs.json")
+
+
+def with_timestamp(filename: str) -> str:
+    stem = Path(filename).stem
+    suffix = Path(filename).suffix
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return f"{stem}_{timestamp}{suffix}"
 
 def load_materials_path() -> str | None:
     if os.path.exists(_MATERIALS_PREFS):
@@ -337,10 +345,12 @@ class ProcessWindow(QWidget):
         # две кнопки экспорта
         self.btn_plain  = QPushButton("↗  Сохранить в Excel (простой)")
         self.btn_fact   = QPushButton("↗  Excel с формулами (факт)")
-        for b in (self.btn_plain, self.btn_fact): b.setEnabled(False)
+        self.btn_html   = QPushButton("↗  Сохранить в HTML")
+        for b in (self.btn_plain, self.btn_fact, self.btn_html): b.setEnabled(False)
 
         self.btn_plain.clicked.connect(self._save_plain)
         self.btn_fact.clicked.connect(self._save_fact)
+        self.btn_html.clicked.connect(self._save_html)
 
         # выбор файла с матералами
         self.btn_materials = QPushButton("Файл цен на материалы (опционально)")
@@ -355,6 +365,7 @@ class ProcessWindow(QWidget):
 
         lay.addWidget(self.btn_plain)
         lay.addWidget(self.btn_fact)
+        lay.addWidget(self.btn_html)
 
         self._df: pd.DataFrame | None = None
 
@@ -364,7 +375,7 @@ class ProcessWindow(QWidget):
             QMessageBox.information(self, "Нет файлов", "Добавьте хотя бы один файл.")
             return
         self.widget.btn_run.setEnabled(False)
-        for b in (self.btn_plain, self.btn_fact): b.setEnabled(False)
+        for b in (self.btn_plain, self.btn_fact, self.btn_html): b.setEnabled(False)
         self.worker = ProcessWorker(files, self.materials_path)
         self.worker.finished.connect(self._show_result)
         self.worker.start()
@@ -386,7 +397,7 @@ class ProcessWindow(QWidget):
         self._df = df
         TableDialog(df, "Результат обработки").exec_()
 
-        for b in (self.btn_plain, self.btn_fact):  # ✅ добавили btn_diff
+        for b in (self.btn_plain, self.btn_fact, self.btn_html):
             b.setEnabled(True)
 
         self.widget.btn_run.setEnabled(True)
@@ -395,7 +406,7 @@ class ProcessWindow(QWidget):
     def _save_plain2(self):
         if self._df is None: return
         path, _ = QFileDialog.getSaveFileName(self, "Excel-файл",
-                                              "processed.xlsx", "Excel (*.xlsx)")
+                                              with_timestamp("processed.xlsx"), "Excel (*.xlsx)")
         if path:
             try:
                 self._df.to_excel(path, index=False, engine="openpyxl")
@@ -408,55 +419,44 @@ class ProcessWindow(QWidget):
             return
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "Excel-файл", "processed.xlsx", "Excel (*.xlsx)"
+            self, "Excel-файл", with_timestamp("processed.xlsx"), "Excel (*.xlsx)"
         )
 
         if not path:
             return
 
         try:
+            export_df = self._df.copy()
+
             # Проверяем наличие необходимых столбцов
-            if 'Подраздел' not in self._df.columns or 'Стоимость' not in self._df.columns:
+            if 'Подраздел' not in export_df.columns or 'Стоимость' not in export_df.columns:
                 QMessageBox.warning(self, "Предупреждение",
                                     "Отсутствуют необходимые столбцы: 'Подраздел' или 'Стоимость'")
                 return
 
             # Создаем категориальный тип с порядком первого вхождения
-            self._df['Подраздел_порядок'] = pd.Categorical(
-                self._df['Подраздел'],
-                categories=self._df['Подраздел'].dropna().unique(),
+            export_df['Подраздел_порядок'] = pd.Categorical(
+                export_df['Подраздел'],
+                categories=export_df['Подраздел'].dropna().unique(),
                 ordered=True
             )
 
             # Группируем с сохранением порядка
-            sums_by_subsection = self._df.groupby('Подраздел_порядок', observed=True, sort=False)[
+            sums_by_subsection = export_df.groupby('Подраздел_порядок', observed=True, sort=False)[
                 'Стоимость'].sum().reset_index()
             sums_by_subsection.columns = ['Подраздел', 'Сумма стоимости']
 
             # Создаем Excel writer
             with pd.ExcelWriter(path, engine='openpyxl') as writer:
                 # Сохраняем основной лист (убираем временный столбец)
-                self._df.drop('Подраздел_порядок', axis=1, errors='ignore').to_excel(writer, sheet_name='Данные',
-                                                                                     index=False)
+                clean_df = export_df.drop('Подраздел_порядок', axis=1, errors='ignore')
+                clean_df.to_excel(writer, sheet_name='Данные', index=False)
                 ws = writer.sheets['Данные']
 
-                # ищем колонку "Наименование"
-                name_col = None
-                for i, cell in enumerate(ws[1], 1):
-                    if cell.value == "Наименование":
-                        name_col = i
-                        break
-
-                if name_col:
-                    col_letter = ws.cell(row=1, column=name_col).column_letter
-
-                    # ширина столбца = 80
-                    ws.column_dimensions[col_letter].width = 80
-
-                    # перенос текста во всех строках
-                    for row in ws.iter_rows(min_row=2, min_col=name_col, max_col=name_col):
-                        for cell in row:
-                            cell.alignment = Alignment(wrap_text=True)
+                apply_readable_sheet_layout(
+                    ws,
+                    clean_df,
+                )
 
                 # Добавляем строку ИТОГО
                 total_sum = sums_by_subsection['Сумма стоимости'].sum()
@@ -484,13 +484,30 @@ class ProcessWindow(QWidget):
     def _save_fact(self):
         if self._df is None: return
         path, _ = QFileDialog.getSaveFileName(self, "Excel-файл",
-                                              "processed_fact.xlsx", "Excel (*.xlsx)")
+                                              with_timestamp("processed_fact.xlsx"), "Excel (*.xlsx)")
         if path:
             try:
                 export_with_fact_formula(self._df, path)
                 QMessageBox.information(self, "Готово", path)
             except Exception as e:
                 QMessageBox.critical(self, "Ошибка", str(e))
+
+    def _save_html(self):
+        if self._df is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "HTML-файл", with_timestamp("processed.html"), "HTML (*.html)"
+        )
+        if not path:
+            return
+        try:
+            clean_df = self._df.drop('Подраздел_порядок', axis=1, errors='ignore')
+            html_content = dataframe_to_readable_html(clean_df, title="Обработанная смета")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(html_content)
+            QMessageBox.information(self, "Готово", f"HTML-файл сохранен:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", str(e))
 
 
 def materials_summary_by_object(df: pd.DataFrame) -> pd.DataFrame:
@@ -619,6 +636,7 @@ class CompareWindow(QWidget):
         # получаем детальный и сводный отчёты
         df_detail = df
         df_summary = cmp_obj.generate_subsection_summary()
+        df_info = cmp_obj.generate_top_difference_report()
 
         # собираем вкладки
         dlg = QDialog(self)
@@ -646,6 +664,15 @@ class CompareWindow(QWidget):
         lay2.addWidget(tv2)
         tabs.addTab(w2, "Сводка по подразделам")
 
+        w3 = QWidget();
+        lay3 = QVBoxLayout(w3)
+        tv3 = QTableView();
+        tv3.setModel(PandasModel(df_info))
+        tv3.resizeRowsToContents();
+        tv3.setWordWrap(True)
+        lay3.addWidget(tv3)
+        tabs.addTab(w3, "Инфо")
+
         # собрать диалог
         dlg_layout = QVBoxLayout(dlg)
         dlg_layout.addWidget(tabs)
@@ -663,7 +690,7 @@ class CompareWindow(QWidget):
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Сохранить Excel",
-            "added_removed.xlsx",
+            with_timestamp("added_removed.xlsx"),
             "Excel (*.xlsx)"
         )
         if path:
@@ -679,7 +706,7 @@ class CompareWindow(QWidget):
         if not self._cmp:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "HTML-файл", "customer_report.html", "HTML (*.html)"
+            self, "HTML-файл", with_timestamp("customer_report.html"), "HTML (*.html)"
         )
         if not path:
             return
@@ -693,7 +720,7 @@ class CompareWindow(QWidget):
         if not self._cmp:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Excel-файл", "customer_report.xlsx", "Excel (*.xlsx)"
+            self, "Excel-файл", with_timestamp("customer_report.xlsx"), "Excel (*.xlsx)"
         )
         if not path:
             return

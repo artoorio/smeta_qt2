@@ -19,6 +19,7 @@ from starlette.background import BackgroundTask
 from data_processing import process_smeta
 from db import FileRecord, SessionLocal, SmetaRow
 from fact_export import export_with_fact_formula
+from export_formatting import apply_readable_sheet_layout, dataframe_to_readable_html
 from pydantic import BaseModel, Field
 from smeta_compare import SmetaComparator
 
@@ -221,11 +222,17 @@ async def process_export(
     output_path = os.path.join(tmpdir, "processed.xlsx")
     if mode == "fact":
         export_with_fact_formula(df, output_path)
+    elif mode == "html":
+        output_path = os.path.join(tmpdir, "processed.html")
+        with open(output_path, "w", encoding="utf-8") as handle:
+            handle.write(dataframe_to_readable_html(df, title="Обработанная смета"))
     else:
-        df.to_excel(output_path, index=False)
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Данные")
+            apply_readable_sheet_layout(writer.sheets["Данные"], df)
     return FileResponse(
         output_path,
-        filename="processed.xlsx",
+        filename=os.path.basename(output_path),
         background=BackgroundTask(shutil.rmtree, tmpdir),
     )
 

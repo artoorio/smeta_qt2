@@ -8,6 +8,7 @@ from difflib import SequenceMatcher
 import numpy as np
 import pandas as pd
 from data_processing import process_smeta
+from export_formatting import apply_readable_sheet_layout
 import math
 from openpyxl.utils import get_column_letter     # ширина колонок
 from openpyxl.styles import Alignment            # перенос + высота
@@ -69,8 +70,8 @@ class SmetaComparator:
         return {c: (np.nan if np.issubdtype(df[c].dtype, np.number) else "") for c in df.columns}
 
     def _align(self):
-        s1 = self.df1[self.compare_column].fillna("").astype(str).tolist()
-        s2 = self.df2[self.compare_column].fillna("").astype(str).tolist()
+        s1 = self._build_alignment_key_series(self.df1).tolist()
+        s2 = self._build_alignment_key_series(self.df2).tolist()
         m = SequenceMatcher(None, s1, s2)
         r1, r2 = [], []
         for tag, i1, i2, j1, j2 in m.get_opcodes():
@@ -94,7 +95,7 @@ class SmetaComparator:
                     r2.append(self.df2.iloc[j].to_dict())
         return pd.DataFrame(r1).reset_index(drop=True), pd.DataFrame(r2).reset_index(drop=True)
 
-    _SECTION_NAME_RE = re.compile(r'^\s*раздел\s+\d+\.\s*', re.IGNORECASE)
+    _SECTION_NAME_RE = re.compile(r'^\s*раздел\s+\d+\.?\s*', re.IGNORECASE)
 
     def _strip_section(self, text: str | None) -> str:
         """Убирает префикс 'Раздел N. ' и лишние пробелы."""
@@ -102,6 +103,22 @@ class SmetaComparator:
 
     def _norm(self, text: str | None) -> str:
         return (text or '').strip().lower()
+
+    def _section_match_series(self, df: pd.DataFrame) -> pd.Series:
+        if "Название раздела" in df.columns:
+            return df["Название раздела"].fillna("").astype(str).str.strip()
+        if "Раздел" in df.columns:
+            return df["Раздел"].map(self._strip_section)
+        return pd.Series([""] * len(df), index=df.index, dtype="object")
+
+    def _build_alignment_key_series(self, df: pd.DataFrame) -> pd.Series:
+        section = self._section_match_series(df)
+        if self.subsection_column and self.subsection_column in df.columns:
+            subsection = df[self.subsection_column].fillna("").astype(str).str.strip()
+        else:
+            subsection = pd.Series([""] * len(df), index=df.index, dtype="object")
+        compare = df[self.compare_column].fillna("").astype(str).str.strip()
+        return section + "||" + subsection + "||" + compare
     # subsection rows
     def _insert_subsection(self, rows: List[dict], subs1: pd.Series, subs2: pd.Series, col_order: List[str]):
         current = None
@@ -174,8 +191,12 @@ class SmetaComparator:
         if "Раздел" in d1.columns:
             d1 = d1.copy();
             d2 = d2.copy()
-            d1["SectionName"] = d1["Раздел"].map(self._strip_section)
-            d2["SectionName"] = d2["Раздел"].map(self._strip_section)
+            if "Название раздела" in d1.columns and "Название раздела" in d2.columns:
+                d1["SectionName"] = d1["Название раздела"].fillna("").astype(str).str.strip()
+                d2["SectionName"] = d2["Название раздела"].fillna("").astype(str).str.strip()
+            else:
+                d1["SectionName"] = d1["Раздел"].map(self._strip_section)
+                d2["SectionName"] = d2["Раздел"].map(self._strip_section)
             grp_cols = ["SectionName", key]
         else:
             grp_cols = [key]
@@ -239,8 +260,9 @@ class SmetaComparator:
 
         for i in range(len(d1)):
             # 1) raw
-            raw_sec = (d1["Раздел"][i] if has_sec else "") or (d2["Раздел"][i] if has_sec else "")
-            sec     = self._strip_section(raw_sec)
+            sec_source = "Название раздела" if "Название раздела" in d1.columns and "Название раздела" in d2.columns else "Раздел"
+            raw_sec = (d1[sec_source][i] if has_sec else "") or (d2[sec_source][i] if has_sec else "")
+            sec = raw_sec.strip() if sec_source == "Название раздела" else self._strip_section(raw_sec)
 
             raw_sub = (d1[self.subsection_column][i] if has_sub else "") or \
                       (d2[self.subsection_column][i] if has_sub else "")
@@ -284,10 +306,41 @@ class SmetaComparator:
 
         return pd.DataFrame(rows)
 
+    def generate_top_difference_report(self, limit: int = 10) -> pd.DataFrame:
+        d1, d2 = self._align()
+
+        qty1 = pd.to_numeric(d1.get("Количество", pd.Series([None] * len(d1))), errors="coerce")
+        qty2 = pd.to_numeric(d2.get("Количество", pd.Series([None] * len(d2))), errors="coerce")
+        cost1 = pd.to_numeric(d1.get("Стоимость", pd.Series([None] * len(d1))), errors="coerce").fillna(0)
+        cost2 = pd.to_numeric(d2.get("Стоимость", pd.Series([None] * len(d2))), errors="coerce").fillna(0)
+        pos1 = d1.get("Номер позиции", pd.Series([""] * len(d1))).fillna("").astype(str).str.strip()
+        pos2 = d2.get("Номер позиции", pd.Series([""] * len(d2))).fillna("").astype(str).str.strip()
+        name1 = d1.get(self.compare_column, pd.Series([""] * len(d1))).fillna("").astype(str).str.strip()
+        name2 = d2.get(self.compare_column, pd.Series([""] * len(d2))).fillna("").astype(str).str.strip()
+        section1 = d1.get("Название раздела", d1.get("Раздел", pd.Series([""] * len(d1)))).fillna("").astype(str).str.strip()
+        section2 = d2.get("Название раздела", d2.get("Раздел", pd.Series([""] * len(d2)))).fillna("").astype(str).str.strip()
+        subsection1 = d1.get("Подраздел", pd.Series([""] * len(d1))).fillna("").astype(str).str.strip()
+        subsection2 = d2.get("Подраздел", pd.Series([""] * len(d2))).fillna("").astype(str).str.strip()
+
+        info = pd.DataFrame({
+            "Раздел": section1.where(section1 != "", section2),
+            "Подраздел": subsection1.where(subsection1 != "", subsection2),
+            "Номер позиции": pos1.where(pos1 != "", pos2),
+            self.compare_column: name1.where(name1 != "", name2),
+            "Кол-во (Проект)": qty1,
+            "Кол-во (Факт)": qty2,
+            "Ст-ть (Проект)": cost1,
+            "Ст-ть (Факт)": cost2,
+        })
+        info["Разница (Ст-ть)"] = info["Ст-ть (Проект)"] - info["Ст-ть (Факт)"]
+        info["_abs_diff"] = info["Разница (Ст-ть)"].abs()
+        info = info[info["_abs_diff"] > 0].sort_values("_abs_diff", ascending=False).head(limit)
+        return info.drop(columns=["_abs_diff"]).reset_index(drop=True)
+
     # ------------------------------------------------------------------
     #  вспомогательный «разделитель»
     # ------------------------------------------------------------------
-    _SECTION_NAME_RE = re.compile(r'^\s*раздел\s+\d+\.\s*', re.IGNORECASE)
+    _SECTION_NAME_RE = re.compile(r'^\s*раздел\s+\d+\.?\s*', re.IGNORECASE)
 
     def _strip_section(self, text: str | None) -> str:
         """Убирает префикс 'Раздел N. ' и лишние пробелы."""
@@ -362,13 +415,40 @@ class SmetaComparator:
           – 'Customer' : детальный отчёт (с раскраской, если есть Категория)
           – 'Summary'  : сводка по подразделам
         """
-        import math
         from openpyxl.utils import get_column_letter
-        from openpyxl.styles import Alignment, PatternFill, Font, Border, Side
+        from openpyxl.styles import PatternFill, Font, Border, Side
 
         # 1) Получаем DataFrame
         df_detail = self.generate_customer_report()
         df_summary = self.generate_subsection_summary()
+        df_info = self.generate_top_difference_report()
+        short_names = {
+            "Количество": "Кол-во",
+            "Стоимость": "Ст-ть",
+        }
+
+        def shorten_metric(name: str) -> str:
+            return short_names.get(name, name)
+
+        detail_renames = {}
+        summary_renames = {}
+        for value_name in self.value_column:
+            short_value = shorten_metric(value_name)
+            detail_renames[f"{value_name} ({self.file1_name})"] = f"{short_value} (Проект)"
+            detail_renames[f"{value_name} ({self.file2_name})"] = f"{short_value} (Факт)"
+            detail_renames[f"Разница ({value_name})"] = f"Разница ({short_value})"
+        summary_renames[f"Стоимость ({self.file1_name})"] = "Ст-ть (Проект)"
+        summary_renames[f"Стоимость ({self.file2_name})"] = "Ст-ть (Факт)"
+        summary_renames["Разница (Стоимость)"] = "Разница (Ст-ть)"
+
+        export_detail = df_detail.rename(columns=detail_renames)
+        export_summary = df_summary.rename(columns=summary_renames)
+        if "Код расценки" in export_detail.columns and "Наименование" in export_detail.columns:
+            detail_columns = list(export_detail.columns)
+            detail_columns.remove("Код расценки")
+            name_index = detail_columns.index("Наименование")
+            detail_columns.insert(name_index, "Код расценки")
+            export_detail = export_detail[detail_columns]
 
         # 2) Подготовка стилей
         fill_work = PatternFill("solid", fgColor="D6EFD6")
@@ -378,20 +458,21 @@ class SmetaComparator:
         bold = Font(bold=True)
         thin = Side(style="thin", color="000000")
         border_b = Border(bottom=thin)
+        money_format = '#,##0.00'
 
         # 3) Запись в Excel
         with pd.ExcelWriter(path, engine="openpyxl") as writer:
             # — Детальный лист —
-            df_detail.to_excel(writer, index=False, sheet_name="Customer")
+            export_detail.to_excel(writer, index=False, sheet_name="Customer")
             ws = writer.sheets["Customer"]
 
-            headers = list(df_detail.columns)
+            headers = list(export_detail.columns)
             # ищем нужные индексы
             idx_cat = headers.index("Категория") + 1 if "Категория" in headers else None
-            idx_qty = headers.index("Количество") + 1 if "Количество" in headers else None
+            idx_qty = headers.index("Кол-во (Проект)") + 1 if "Кол-во (Проект)" in headers else None
 
             # проходим по строкам
-            for r in range(2, len(df_detail) + 2):
+            for r in range(2, len(export_detail) + 2):
                 first = ws.cell(row=r, column=1).value
 
                 # строка-разделитель?
@@ -430,27 +511,67 @@ class SmetaComparator:
                     for c in range(1, len(headers) + 1):
                         ws.cell(row=r - 1, column=c).border = border_b
 
-                # перенос текста и авто-высота первой колонки
-                cell0 = ws.cell(row=r, column=1)
-                cell0.alignment = Alignment(wrapText=True)
-                txt = str(cell0.value or "")
-                lines = max(1, math.ceil(len(txt) / 45))
-                ws.row_dimensions[r].height = lines * 15
-
-            # ширины колонок
-            if "Наименование" in headers:
-                i = headers.index("Наименование") + 1
-                ws.column_dimensions[get_column_letter(i)].width = 40
+            apply_readable_sheet_layout(ws, export_detail)
             if "Код расценки" in headers:
                 i = headers.index("Код расценки") + 1
                 ws.column_dimensions[get_column_letter(i)].width = 15
             if "Категория" in headers:
                 i = headers.index("Категория") + 1
                 ws.column_dimensions[get_column_letter(i)].width = 10
+            for col_index, header in enumerate(headers, start=1):
+                if "Ст-ть" not in str(header) and "Разница (Стоимость)" not in str(header):
+                    continue
+                for row_index in range(2, len(export_detail) + 2):
+                    cell = ws.cell(row=row_index, column=col_index)
+                    if isinstance(cell.value, (int, float)) and not pd.isna(cell.value):
+                        cell.number_format = money_format
 
             # — Сводный лист —
-            df_summary.to_excel(writer, index=False, sheet_name="Summary")
-            # в summary можно не стилизовать
+            export_summary.to_excel(writer, index=False, sheet_name="Summary")
+            summary_ws = writer.sheets["Summary"]
+            apply_readable_sheet_layout(summary_ws, export_summary)
+            for col_index, header in enumerate(export_summary.columns, start=1):
+                if "Ст-ть" not in str(header) and "Разница" not in str(header):
+                    continue
+                for row_index in range(2, len(export_summary) + 2):
+                    cell = summary_ws.cell(row=row_index, column=col_index)
+                    if isinstance(cell.value, (int, float)) and not pd.isna(cell.value):
+                        cell.number_format = money_format
+
+            df_info.to_excel(writer, index=False, sheet_name="Инфо")
+            info_ws = writer.sheets["Инфо"]
+            apply_readable_sheet_layout(info_ws, df_info)
+            for col_index, header in enumerate(df_info.columns, start=1):
+                if "Ст-ть" not in str(header):
+                    continue
+                for row_index in range(2, len(df_info) + 2):
+                    cell = info_ws.cell(row=row_index, column=col_index)
+                    if isinstance(cell.value, (int, float)) and not pd.isna(cell.value):
+                        cell.number_format = money_format
+
+            legend = pd.DataFrame(
+                [
+                    {
+                        "Роль": "Проект",
+                        "Файл": self.file1_name,
+                        "Общая стоимость": float(pd.to_numeric(self.df1.get("Стоимость"), errors="coerce").fillna(0).sum()),
+                    },
+                    {
+                        "Роль": "Факт",
+                        "Файл": self.file2_name,
+                        "Общая стоимость": float(pd.to_numeric(self.df2.get("Стоимость"), errors="coerce").fillna(0).sum()),
+                    },
+                ]
+            )
+            legend.to_excel(writer, index=False, sheet_name="Файлы")
+            files_ws = writer.sheets["Файлы"]
+            apply_readable_sheet_layout(files_ws, legend, name_column="Файл")
+            if "Общая стоимость" in legend.columns:
+                cost_col = list(legend.columns).index("Общая стоимость") + 1
+                for row_index in range(2, len(legend) + 2):
+                    cell = files_ws.cell(row=row_index, column=cost_col)
+                    if isinstance(cell.value, (int, float)) and not pd.isna(cell.value):
+                        cell.number_format = money_format
 
         return path
 
