@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import numpy as np
 import pandas as pd
 from data_processing import process_smeta
-from export_formatting import apply_readable_sheet_layout
+from export_formatting import apply_named_column_widths, apply_readable_sheet_layout, apply_section_row_grouping
 import math
 from openpyxl.utils import get_column_letter     # ширина колонок
 from openpyxl.styles import Alignment            # перенос + высота
@@ -770,7 +770,7 @@ class SmetaComparator:
             # 3) новый подраздел? и не совпадает с разделом
             if sub and self._norm(sub) != self._norm(cur_sub) and self._norm(sub) != self._norm(cur_sec):
                 #print('#5')
-                rows.append(self._divider_row(f"-- {sub} --"))
+                rows.append(self._divider_row(f"---- {sub} ----"))
                 cur_sub = sub
 
             # 4) позиция
@@ -864,6 +864,10 @@ class SmetaComparator:
             row.setdefault(col, "")
         return row
 
+    @staticmethod
+    def _is_divider_text(value) -> bool:
+        return isinstance(value, str) and value.strip().startswith("--")
+
     def export_customer_html(self, path: str = "customer_report.html") -> str:
         """
         Экспортит в один HTML-файл две таблицы подряд:
@@ -888,10 +892,7 @@ class SmetaComparator:
 
         # 3. Подсветка строк-разделителей в детальном отчёте
         def highlight_dividers(html: str) -> str:
-            return html.replace(
-                "<tr><td>-- ",
-                '<tr class="divider"><td>-- '
-            )
+            return re.sub(r"<tr><td>(--+ .+? --+)</td>", r'<tr class="divider"><td>\1</td>', html)
 
         # 4. Сборка итогового HTML
         with open(path, "w", encoding="utf-8") as f:
@@ -976,13 +977,14 @@ class SmetaComparator:
             # ищем нужные индексы
             idx_cat = headers.index("Категория") + 1 if "Категория" in headers else None
             idx_qty = headers.index("Кол-во (Проект)") + 1 if "Кол-во (Проект)" in headers else None
+            idx_compare = headers.index(self.compare_column) + 1 if self.compare_column in headers else None
 
             # проходим по строкам
             for r in range(2, len(export_detail) + 2):
-                first = ws.cell(row=r, column=1).value
+                divider_value = ws.cell(row=r, column=idx_compare).value if idx_compare else None
 
                 # строка-разделитель?
-                if isinstance(first, str) and first.startswith("-- "):
+                if self._is_divider_text(divider_value):
                     for c in range(1, len(headers) + 1):
                         cell = ws.cell(row=r, column=c)
                         cell.fill = fill_div
@@ -1018,12 +1020,19 @@ class SmetaComparator:
                         ws.cell(row=r - 1, column=c).border = border_b
 
             apply_readable_sheet_layout(ws, export_detail)
+            apply_section_row_grouping(ws, export_detail, self.compare_column)
             if "Код расценки" in headers:
                 i = headers.index("Код расценки") + 1
                 ws.column_dimensions[get_column_letter(i)].width = 15
             if "Категория" in headers:
                 i = headers.index("Категория") + 1
                 ws.column_dimensions[get_column_letter(i)].width = 10
+            if "Раздел" in headers:
+                section_col = headers.index("Раздел") + 1
+                for row_index in range(2, len(export_detail) + 2):
+                    cell = ws.cell(row=row_index, column=section_col)
+                    if str(cell.value or "").strip():
+                        cell.font = bold
             for col_index, header in enumerate(headers, start=1):
                 if "Ст-ть" not in str(header) and "Разница (Стоимость)" not in str(header):
                     continue
@@ -1047,6 +1056,21 @@ class SmetaComparator:
             df_info.to_excel(writer, index=False, sheet_name="Инфо")
             info_ws = writer.sheets["Инфо"]
             apply_readable_sheet_layout(info_ws, df_info)
+            apply_named_column_widths(
+                info_ws,
+                list(df_info.columns),
+                {
+                    "Раздел": 26,
+                    "Подраздел": 28,
+                    "Номер позиции": 14,
+                    "Наименование": 52,
+                    "Кол-во (Проект)": 14,
+                    "Кол-во (Факт)": 14,
+                    "Ст-ть (Проект)": 16,
+                    "Ст-ть (Факт)": 16,
+                    "Разница (Ст-ть)": 16,
+                },
+            )
             for col_index, header in enumerate(df_info.columns, start=1):
                 if "Ст-ть" not in str(header):
                     continue

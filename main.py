@@ -9,7 +9,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QPushButton, QListWidget,
     QListWidgetItem, QFileDialog, QHBoxLayout, QMessageBox, QLabel,
-    QStackedWidget, QMainWindow
+    QStackedWidget, QMainWindow, QHeaderView
 )
 from column_order_dialog import ColumnOrderDialog
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -62,6 +62,105 @@ def with_timestamp(filename: str) -> str:
     suffix = Path(filename).suffix
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     return f"{stem}_{timestamp}{suffix}"
+
+
+def offer_open_file(parent, path: str, title: str = "Готово", label: str = "Файл сохранён") -> None:
+    reply = QMessageBox.question(
+        parent,
+        title,
+        f"{label}:\n{path}\n\nОткрыть файл сейчас?",
+        QMessageBox.Yes | QMessageBox.No,
+        QMessageBox.Yes,
+    )
+    if reply == QMessageBox.Yes:
+        try:
+            os.startfile(path)
+        except Exception as e:
+            QMessageBox.warning(parent, "Не удалось открыть файл", str(e))
+
+
+def configure_table_view(view: QTableView, df: pd.DataFrame) -> None:
+    header = view.horizontalHeader()
+    header.setStretchLastSection(True)
+    header.setSectionResizeMode(QHeaderView.Interactive)
+
+    width_map = {
+        "№": 60,
+        "Раздел": 180,
+        "Название раздела": 220,
+        "Подраздел": 220,
+        "Номер позиции": 110,
+        "Код расценки": 150,
+        "Наименование": 420,
+        "Единица измерения": 110,
+        "Категория": 110,
+    }
+
+    for idx, col_name in enumerate(df.columns):
+        col = str(col_name)
+        width = width_map.get(col)
+        if width is None:
+            if "Кол-во" in col or "Количество" in col:
+                width = 110
+            elif "Ст-ть" in col or "Стоимость" in col or "Разница" in col:
+                width = 125
+            else:
+                width = 140
+        view.setColumnWidth(idx, width)
+
+    view.resizeRowsToContents()
+    view.setWordWrap(True)
+
+
+def prepare_compare_display_frames(cmp_obj, df_detail: pd.DataFrame, df_summary: pd.DataFrame, df_info: pd.DataFrame):
+    short_names = {
+        "Количество": "Кол-во",
+        "Стоимость": "Ст-ть",
+    }
+
+    def shorten_metric(name: str) -> str:
+        return short_names.get(name, name)
+
+    detail_renames = {}
+    summary_renames = {}
+    for value_name in cmp_obj.value_column:
+        short_value = shorten_metric(value_name)
+        detail_renames[f"{value_name} ({cmp_obj.file1_name})"] = f"{short_value} (Проект)"
+        detail_renames[f"{value_name} ({cmp_obj.file2_name})"] = f"{short_value} (Факт)"
+        detail_renames[f"Разница ({value_name})"] = f"Разница ({short_value})"
+    summary_renames[f"Стоимость ({cmp_obj.file1_name})"] = "Ст-ть (Проект)"
+    summary_renames[f"Стоимость ({cmp_obj.file2_name})"] = "Ст-ть (Факт)"
+    summary_renames["Разница (Стоимость)"] = "Разница (Ст-ть)"
+
+    detail_view = df_detail.rename(columns=detail_renames)
+    summary_view = df_summary.rename(columns=summary_renames)
+    info_view = df_info.copy()
+
+    if "Код расценки" in detail_view.columns and "Наименование" in detail_view.columns:
+        detail_columns = list(detail_view.columns)
+        detail_columns.remove("Код расценки")
+        name_index = detail_columns.index("Наименование")
+        detail_columns.insert(name_index, "Код расценки")
+        detail_view = detail_view[detail_columns]
+
+    return detail_view, summary_view, info_view
+
+
+def build_compare_files_frame(cmp_obj) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Роль": "Проект",
+                "Файл": cmp_obj.file1_name,
+                "Общая стоимость": float(pd.to_numeric(cmp_obj.df1.get("Стоимость"), errors="coerce").fillna(0).sum()),
+            },
+            {
+                "Роль": "Факт",
+                "Файл": cmp_obj.file2_name,
+                "Общая стоимость": float(pd.to_numeric(cmp_obj.df2.get("Стоимость"), errors="coerce").fillna(0).sum()),
+            },
+        ]
+    )
 
 def load_materials_path() -> str | None:
     if os.path.exists(_MATERIALS_PREFS):
@@ -410,7 +509,7 @@ class ProcessWindow(QWidget):
         if path:
             try:
                 self._df.to_excel(path, index=False, engine="openpyxl")
-                QMessageBox.information(self, "Готово", path)
+                offer_open_file(self, path)
             except Exception as e:
                 QMessageBox.critical(self, "Ошибка", str(e))
 
@@ -475,7 +574,7 @@ class ProcessWindow(QWidget):
                     rows.to_excel(writer, sheet_name='Сводка по материалам', index=False)
                 #logging.info(rows[1])
 
-            QMessageBox.information(self, "Готово", f"Файл сохранен:\n{path}")
+            offer_open_file(self, path)
 
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить файл:\n{str(e)}")
@@ -488,7 +587,7 @@ class ProcessWindow(QWidget):
         if path:
             try:
                 export_with_fact_formula(self._df, path)
-                QMessageBox.information(self, "Готово", path)
+                offer_open_file(self, path)
             except Exception as e:
                 QMessageBox.critical(self, "Ошибка", str(e))
 
@@ -637,6 +736,13 @@ class CompareWindow(QWidget):
         df_detail = df
         df_summary = cmp_obj.generate_subsection_summary()
         df_info = cmp_obj.generate_top_difference_report()
+        df_detail, df_summary, df_info = prepare_compare_display_frames(
+            cmp_obj,
+            df_detail,
+            df_summary,
+            df_info,
+        )
+        df_files = build_compare_files_frame(cmp_obj)
 
         # собираем вкладки
         dlg = QDialog(self)
@@ -649,8 +755,7 @@ class CompareWindow(QWidget):
         lay1 = QVBoxLayout(w1)
         tv1 = QTableView();
         tv1.setModel(PandasModel(df_detail))
-        tv1.resizeRowsToContents();
-        tv1.setWordWrap(True)
+        configure_table_view(tv1, df_detail)
         lay1.addWidget(tv1)
         tabs.addTab(w1, "Детали")
 
@@ -659,8 +764,7 @@ class CompareWindow(QWidget):
         lay2 = QVBoxLayout(w2)
         tv2 = QTableView();
         tv2.setModel(PandasModel(df_summary))
-        tv2.resizeRowsToContents();
-        tv2.setWordWrap(True)
+        configure_table_view(tv2, df_summary)
         lay2.addWidget(tv2)
         tabs.addTab(w2, "Сводка по подразделам")
 
@@ -668,10 +772,17 @@ class CompareWindow(QWidget):
         lay3 = QVBoxLayout(w3)
         tv3 = QTableView();
         tv3.setModel(PandasModel(df_info))
-        tv3.resizeRowsToContents();
-        tv3.setWordWrap(True)
+        configure_table_view(tv3, df_info)
         lay3.addWidget(tv3)
         tabs.addTab(w3, "Инфо")
+
+        w4 = QWidget();
+        lay4 = QVBoxLayout(w4)
+        tv4 = QTableView();
+        tv4.setModel(PandasModel(df_files))
+        configure_table_view(tv4, df_files)
+        lay4.addWidget(tv4)
+        tabs.addTab(w4, "Файлы")
 
         # собрать диалог
         dlg_layout = QVBoxLayout(dlg)
@@ -696,7 +807,7 @@ class CompareWindow(QWidget):
         if path:
             try:
                 self._cmp.export_added_removed_positions(path, value_col="Количество")
-                QMessageBox.information(self, "Готово", f"Файл сохранён:\n{path}")
+                offer_open_file(self, path)
             except Exception as e:
                 QMessageBox.critical(self, "Ошибка", str(e))
     # ────────────────────────────────────────────────
@@ -726,7 +837,7 @@ class CompareWindow(QWidget):
             return
         try:
             self._cmp.export_customer_excel(path)
-            QMessageBox.information(self, "Готово", f"Excel-отчёт сохранён:\n{path}")
+            offer_open_file(self, path, label="Excel-отчёт сохранён")
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", str(e))
 
@@ -748,15 +859,7 @@ class TableDialog(QDialog):
 
         view = QTableView()
         model = PandasModel(df); view.setModel(model)
-
-        # ―–– колонка «Наименование» = ~400 px (40 «символов»)
-        if "Наименование" in df.columns:
-            col_idx = list(df.columns).index("Наименование")
-            view.setColumnWidth(col_idx, 400)
-
-        # перенос и авто-высота
-        view.resizeRowsToContents()
-        view.setWordWrap(True)
+        configure_table_view(view, df)
 
         lay = QVBoxLayout(self); lay.addWidget(view)
 

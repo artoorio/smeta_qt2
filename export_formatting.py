@@ -4,7 +4,7 @@ import textwrap
 from typing import Iterable
 
 import pandas as pd
-from openpyxl.styles import Alignment
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 
@@ -12,6 +12,9 @@ DEFAULT_ROW_HEIGHT = 18
 NAME_MIN_WIDTH = 24
 NAME_MAX_WIDTH = 80
 NAME_TARGET_LINES = 4
+HEADER_FILL = PatternFill("solid", fgColor="EAF1F8")
+GRID_SIDE = Side(style="thin", color="C9D3E0")
+GRID_BORDER = Border(left=GRID_SIDE, right=GRID_SIDE, top=GRID_SIDE, bottom=GRID_SIDE)
 
 
 def _stringify(value) -> str:
@@ -99,6 +102,11 @@ def apply_readable_sheet_layout(
 
     for header_cell in ws[1]:
         header_cell.alignment = Alignment(wrapText=True, vertical="top")
+        header_cell.font = Font(bold=True)
+        header_cell.fill = HEADER_FILL
+        header_cell.border = GRID_BORDER
+
+    ws.freeze_panes = "A2"
 
     if not name_index or name_width is None:
         return
@@ -108,6 +116,40 @@ def apply_readable_sheet_layout(
         cell.alignment = Alignment(wrapText=True, vertical="top")
         line_count = _wrapped_line_count(cell.value, name_width)
         ws.row_dimensions[row_index].height = max(DEFAULT_ROW_HEIGHT, line_count * 15)
+
+    for row in ws.iter_rows(min_row=2, max_row=len(df) + 1, min_col=1, max_col=len(headers)):
+        for cell in row:
+            cell.border = GRID_BORDER
+
+
+def apply_named_column_widths(ws, headers: list[str], width_map: dict[str, int | float]) -> None:
+    for col_index, header in enumerate(headers, start=1):
+        width = width_map.get(str(header))
+        if width is not None:
+            ws.column_dimensions[get_column_letter(col_index)].width = width
+
+
+def apply_section_row_grouping(ws, df: pd.DataFrame, divider_column: str) -> None:
+    if divider_column not in df.columns:
+        return
+
+    divider_values = df[divider_column].fillna("").astype(str).tolist()
+    section_rows: list[int] = []
+    for idx, value in enumerate(divider_values, start=2):
+        text = value.strip()
+        if text.startswith("-- ") and not text.startswith("---- "):
+            section_rows.append(idx)
+
+    if not section_rows:
+        return
+
+    ws.sheet_properties.outlinePr.summaryBelow = False
+
+    for i, section_row in enumerate(section_rows):
+        start_row = section_row + 1
+        end_row = (section_rows[i + 1] - 1) if i + 1 < len(section_rows) else (len(df) + 1)
+        if start_row <= end_row:
+            ws.row_dimensions.group(start_row, end_row, outline_level=1, hidden=False)
 
 
 def dataframe_to_readable_html(
