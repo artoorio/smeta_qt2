@@ -29,8 +29,17 @@ class PandasModel(QAbstractTableModel):
         # ─── DisplayRole: округляем float до 2 знаков ───
         if role == Qt.DisplayRole:
             if isinstance(val, (float, np.floating)) and not np.isnan(val):
-                return f"{val:.2f}"
+                return f"{val:,.2f}".replace(",", " ")
+            if isinstance(val, (int, np.integer)):
+                return f"{int(val):,}".replace(",", " ")
             return "" if pd.isna(val) else str(val)
+
+        if role == Qt.TextAlignmentRole:
+            if col_name == "№":
+                return Qt.AlignRight | Qt.AlignVCenter
+            if isinstance(val, (int, float, np.integer, np.floating)) and not pd.isna(val):
+                return Qt.AlignRight | Qt.AlignVCenter
+            return Qt.AlignLeft | Qt.AlignVCenter
 
         # ─── BackgroundRole: цвет строк по категории ───
         if role == Qt.BackgroundRole:

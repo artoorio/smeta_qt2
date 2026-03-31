@@ -19,7 +19,7 @@ from starlette.background import BackgroundTask
 from data_processing import process_smeta
 from db import FileRecord, SessionLocal, SmetaRow
 from fact_export import export_with_fact_formula
-from export_formatting import apply_readable_sheet_layout, dataframe_to_readable_html
+from export_formatting import apply_readable_sheet_layout, dataframe_to_readable_html, dataframes_to_readable_html
 from pydantic import BaseModel, Field
 from smeta_compare import SmetaComparator
 
@@ -38,6 +38,103 @@ def _df_preview(df: pd.DataFrame, limit: int = 200) -> Dict[str, Any]:
         "columns": list(df.columns),
         "rows": jsonable_encoder(preview.to_dict(orient="records")),
         "row_count": len(df),
+    }
+
+
+def _prepare_compare_frames(cmp_obj: SmetaComparator) -> Dict[str, pd.DataFrame]:
+    detail = cmp_obj.generate_customer_report()
+    summary = cmp_obj.generate_subsection_summary()
+    info = cmp_obj.generate_top_difference_report()
+    unit_diff = cmp_obj.generate_unit_difference_report()
+
+    short_names = {
+        "Количество": "Кол-во",
+        "Стоимость": "Ст-ть",
+    }
+
+    def shorten_metric(name: str) -> str:
+        return short_names.get(name, name)
+
+    def with_line_suffix(label: str, suffix: str) -> str:
+        return f"{label}\n({suffix})"
+
+    detail_renames: Dict[str, str] = {}
+    summary_renames: Dict[str, str] = {}
+    for value_name in cmp_obj.value_column:
+        short_value = shorten_metric(value_name)
+        detail_renames[f"{value_name} ({cmp_obj.file1_name})"] = with_line_suffix(short_value, "Проект")
+        detail_renames[f"{value_name} ({cmp_obj.file2_name})"] = with_line_suffix(short_value, "Факт")
+        detail_renames[f"Разница ({value_name})"] = f"Разница\n({short_value})"
+    summary_renames[f"Стоимость ({cmp_obj.file1_name})"] = with_line_suffix("Ст-ть", "Проект")
+    summary_renames[f"Стоимость ({cmp_obj.file2_name})"] = with_line_suffix("Ст-ть", "Факт")
+    summary_renames["Разница (Стоимость)"] = "Разница\n(Ст-ть)"
+
+    detail = detail.rename(columns=detail_renames)
+    summary = summary.rename(columns=summary_renames)
+    detail = detail.rename(columns={"Единица измерения": "Ед.изм."})
+    info = info.rename(columns={
+        "Номер позиции": "№",
+        "Единица измерения": "Ед.изм.",
+        "Кол-во (Проект)": with_line_suffix("Кол-во", "Проект"),
+        "Кол-во (Факт)": with_line_suffix("Кол-во", "Факт"),
+        "Ст-ть (Проект)": with_line_suffix("Ст-ть", "Проект"),
+        "Ст-ть (Факт)": with_line_suffix("Ст-ть", "Факт"),
+        "Разница (Ст-ть)": "Разница\n(Ст-ть)",
+        "Ед. изм. (Проект)": with_line_suffix("Ед.изм.", "Проект"),
+        "Ед. изм. (Факт)": with_line_suffix("Ед.изм.", "Факт"),
+    })
+    unit_diff = unit_diff.rename(columns={
+        "Номер позиции": "№",
+        "Единица измерения": "Ед.изм.",
+        "Кол-во (Проект)": with_line_suffix("Кол-во", "Проект"),
+        "Кол-во (Факт)": with_line_suffix("Кол-во", "Факт"),
+        "Ст-ть (Проект)": with_line_suffix("Ст-ть", "Проект"),
+        "Ст-ть (Факт)": with_line_suffix("Ст-ть", "Факт"),
+        "Разница (Ст-ть)": "Разница\n(Ст-ть)",
+        "Ед. изм. (Проект)": with_line_suffix("Ед.изм.", "Проект"),
+        "Ед. изм. (Факт)": with_line_suffix("Ед.изм.", "Факт"),
+    })
+
+    preferred_order = [
+        "№",
+        "Код расценки",
+        "Наименование",
+        "Ед.изм.",
+        "Раздел",
+        "Подраздел",
+        "Кол-во\n(Проект)",
+        "Кол-во\n(Факт)",
+        "Разница\n(Кол-во)",
+        "Ст-ть\n(Проект)",
+        "Ст-ть\n(Факт)",
+        "Разница\n(Ст-ть)",
+        "Категория",
+    ]
+    ordered = [col for col in preferred_order if col in detail.columns]
+    ordered.extend(col for col in detail.columns if col not in ordered)
+    detail = detail[ordered]
+
+    files = pd.DataFrame(
+        [
+            {
+                "Роль": "Проект",
+                "Файл": cmp_obj.file1_name,
+                "Общая стоимость": float(pd.to_numeric(cmp_obj.df1.get("Стоимость"), errors="coerce").fillna(0).sum()),
+            },
+            {
+                "Роль": "Факт",
+                "Файл": cmp_obj.file2_name,
+                "Общая стоимость": float(pd.to_numeric(cmp_obj.df2.get("Стоимость"), errors="coerce").fillna(0).sum()),
+            },
+        ]
+    )
+
+    return {
+        "detail": detail,
+        "summary": summary,
+        "info": info,
+        "files": files,
+        "unit_diff": unit_diff,
     }
 
 
@@ -87,22 +184,22 @@ registry = ReportRegistry()
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html", {"request": request})
 
 
 @app.get("/process", response_class=HTMLResponse)
 def process_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse("process.html", {"request": request})
+    return templates.TemplateResponse(request, "process.html", {"request": request})
 
 
 @app.get("/compare", response_class=HTMLResponse)
 def compare_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse("compare.html", {"request": request})
+    return templates.TemplateResponse(request, "compare.html", {"request": request})
 
 
 @app.get("/materials", response_class=HTMLResponse)
 def materials_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse("materials.html", {"request": request})
+    return templates.TemplateResponse(request, "materials.html", {"request": request})
 
 
 @app.get("/api/materials")
@@ -284,12 +381,14 @@ async def compare_endpoint(
             raise HTTPException(status_code=500, detail=str(exc))
 
     report_id = registry.add(cmp)
-    detail = cmp.generate_customer_report()
-    summary = cmp.generate_subsection_summary()
+    frames = _prepare_compare_frames(cmp)
     response = {
         "report_id": report_id,
-        "detail": _df_preview(detail),
-        "summary": _df_preview(summary),
+        "detail": _df_preview(frames["detail"]),
+        "summary": _df_preview(frames["summary"]),
+        "info": _df_preview(frames["info"]),
+        "files": _df_preview(frames["files"]),
+        "unit_diff": _df_preview(frames["unit_diff"]),
         "missing": cmp.get_missing_positions(),
     }
     return response
@@ -309,7 +408,21 @@ async def compare_export(
     output_path = os.path.join(tmpdir, f"compare_{format}")
     if format == "html":
         output_path += ".html"
-        cmp.export_customer_html(output_path)
+        frames = _prepare_compare_frames(cmp)
+        with open(output_path, "w", encoding="utf-8") as handle:
+            handle.write(
+                dataframes_to_readable_html(
+                    [
+                        ("Customer", frames["detail"]),
+                        ("Summary", frames["summary"]),
+                        ("Инфо", frames["info"]),
+                        ("Файлы", frames["files"]),
+                        ("Отличается единица измерения", frames["unit_diff"]),
+                    ],
+                    title="Сравнение смет",
+                    no_wrap_columns={"Файлы": {"Файл"}},
+                )
+            )
     elif format == "excel":
         output_path += ".xlsx"
         cmp.export_customer_excel(output_path)

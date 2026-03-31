@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import numpy as np
 import pandas as pd
 from data_processing import process_smeta
-from export_formatting import apply_named_column_widths, apply_readable_sheet_layout, apply_section_row_grouping
+from export_formatting import apply_named_column_widths, apply_readable_sheet_layout, apply_section_row_grouping, cap_row_heights, autofit_columns_by_name
 import math
 from openpyxl.utils import get_column_letter     # ширина колонок
 from openpyxl.styles import Alignment            # перенос + высота
@@ -831,7 +831,7 @@ class SmetaComparator:
         info = pd.DataFrame({
             "Раздел": section1.where(section1 != "", section2),
             "Подраздел": subsection1.where(subsection1 != "", subsection2),
-            "Номер позиции": pos1.where(pos1 != "", pos2),
+            "№": pos1.where(pos1 != "", pos2),
             self.compare_column: name1.where(name1 != "", name2),
             "Кол-во (Проект)": qty1,
             "Кол-во (Факт)": qty2,
@@ -842,6 +842,47 @@ class SmetaComparator:
         info["_abs_diff"] = info["Разница (Ст-ть)"].abs()
         info = info[info["_abs_diff"] > 0].sort_values("_abs_diff", ascending=False).head(limit)
         return info.drop(columns=["_abs_diff"]).reset_index(drop=True)
+
+    def generate_unit_difference_report(self) -> pd.DataFrame:
+        d1, d2 = self._align_art()
+
+        qty1 = pd.to_numeric(d1.get("Количество", pd.Series([None] * len(d1))), errors="coerce")
+        qty2 = pd.to_numeric(d2.get("Количество", pd.Series([None] * len(d2))), errors="coerce")
+        cost1 = pd.to_numeric(d1.get("Стоимость", pd.Series([None] * len(d1))), errors="coerce").fillna(0)
+        cost2 = pd.to_numeric(d2.get("Стоимость", pd.Series([None] * len(d2))), errors="coerce").fillna(0)
+        pos1 = d1.get("Номер позиции", pd.Series([""] * len(d1))).fillna("").astype(str).str.strip()
+        pos2 = d2.get("Номер позиции", pd.Series([""] * len(d2))).fillna("").astype(str).str.strip()
+        name1 = d1.get(self.compare_column, pd.Series([""] * len(d1))).fillna("").astype(str).str.strip()
+        name2 = d2.get(self.compare_column, pd.Series([""] * len(d2))).fillna("").astype(str).str.strip()
+        section1 = d1.get("Название раздела", d1.get("Раздел", pd.Series([""] * len(d1)))).fillna("").astype(str).str.strip()
+        section2 = d2.get("Название раздела", d2.get("Раздел", pd.Series([""] * len(d2)))).fillna("").astype(str).str.strip()
+        subsection1 = d1.get("Подраздел", pd.Series([""] * len(d1))).fillna("").astype(str).str.strip()
+        subsection2 = d2.get("Подраздел", pd.Series([""] * len(d2))).fillna("").astype(str).str.strip()
+        unit1 = d1.get("Единица измерения", pd.Series([""] * len(d1))).fillna("").astype(str).str.strip()
+        unit2 = d2.get("Единица измерения", pd.Series([""] * len(d2))).fillna("").astype(str).str.strip()
+
+        report = pd.DataFrame({
+            "Раздел": section1.where(section1 != "", section2),
+            "Подраздел": subsection1.where(subsection1 != "", subsection2),
+            "№": pos1.where(pos1 != "", pos2),
+            self.compare_column: name1.where(name1 != "", name2),
+            "Ед. изм. (Проект)": unit1,
+            "Ед. изм. (Факт)": unit2,
+            "Кол-во (Проект)": qty1,
+            "Кол-во (Факт)": qty2,
+            "Ст-ть (Проект)": cost1,
+            "Ст-ть (Факт)": cost2,
+        })
+        report["Разница (Ст-ть)"] = report["Ст-ть (Проект)"] - report["Ст-ть (Факт)"]
+        mismatch_mask = (
+            (report["Ед. изм. (Проект)"] != report["Ед. изм. (Факт)"])
+            & (report["Ед. изм. (Проект)"] != "")
+            & (report["Ед. изм. (Факт)"] != "")
+        )
+        report = report[mismatch_mask].copy()
+        report["_abs_diff"] = report["Разница (Ст-ть)"].abs()
+        report = report.sort_values(["_abs_diff", "№"], ascending=[False, True])
+        return report.drop(columns=["_abs_diff"]).reset_index(drop=True)
 
     # ------------------------------------------------------------------
     #  вспомогательный «разделитель»
@@ -929,6 +970,7 @@ class SmetaComparator:
         df_detail = self.generate_customer_report()
         df_summary = self.generate_subsection_summary()
         df_info = self.generate_top_difference_report()
+        df_unit_diff = self.generate_unit_difference_report()
         short_names = {
             "Количество": "Кол-во",
             "Стоимость": "Ст-ть",
@@ -937,25 +979,59 @@ class SmetaComparator:
         def shorten_metric(name: str) -> str:
             return short_names.get(name, name)
 
+        def with_line_suffix(label: str, suffix: str) -> str:
+            return f"{label}\n({suffix})"
+
         detail_renames = {}
         summary_renames = {}
         for value_name in self.value_column:
             short_value = shorten_metric(value_name)
-            detail_renames[f"{value_name} ({self.file1_name})"] = f"{short_value} (Проект)"
-            detail_renames[f"{value_name} ({self.file2_name})"] = f"{short_value} (Факт)"
-            detail_renames[f"Разница ({value_name})"] = f"Разница ({short_value})"
-        summary_renames[f"Стоимость ({self.file1_name})"] = "Ст-ть (Проект)"
-        summary_renames[f"Стоимость ({self.file2_name})"] = "Ст-ть (Факт)"
-        summary_renames["Разница (Стоимость)"] = "Разница (Ст-ть)"
+            detail_renames[f"{value_name} ({self.file1_name})"] = with_line_suffix(short_value, "Проект")
+            detail_renames[f"{value_name} ({self.file2_name})"] = with_line_suffix(short_value, "Факт")
+            detail_renames[f"Разница ({value_name})"] = f"Разница\n({short_value})"
+        summary_renames[f"Стоимость ({self.file1_name})"] = with_line_suffix("Ст-ть", "Проект")
+        summary_renames[f"Стоимость ({self.file2_name})"] = with_line_suffix("Ст-ть", "Факт")
+        summary_renames["Разница (Стоимость)"] = "Разница\n(Ст-ть)"
 
         export_detail = df_detail.rename(columns=detail_renames)
         export_summary = df_summary.rename(columns=summary_renames)
-        if "Код расценки" in export_detail.columns and "Наименование" in export_detail.columns:
-            detail_columns = list(export_detail.columns)
-            detail_columns.remove("Код расценки")
-            name_index = detail_columns.index("Наименование")
-            detail_columns.insert(name_index, "Код расценки")
-            export_detail = export_detail[detail_columns]
+        export_detail = export_detail.rename(columns={"Единица измерения": "Ед.изм."})
+        df_info = df_info.rename(columns={
+            "Кол-во (Проект)": with_line_suffix("Кол-во", "Проект"),
+            "Кол-во (Факт)": with_line_suffix("Кол-во", "Факт"),
+            "Ст-ть (Проект)": with_line_suffix("Ст-ть", "Проект"),
+            "Ст-ть (Факт)": with_line_suffix("Ст-ть", "Факт"),
+            "Разница (Ст-ть)": "Разница\n(Ст-ть)",
+            "Ед. изм. (Проект)": with_line_suffix("Ед.изм.", "Проект"),
+            "Ед. изм. (Факт)": with_line_suffix("Ед.изм.", "Факт"),
+        })
+        df_unit_diff = df_unit_diff.rename(columns={
+            "Кол-во (Проект)": with_line_suffix("Кол-во", "Проект"),
+            "Кол-во (Факт)": with_line_suffix("Кол-во", "Факт"),
+            "Ст-ть (Проект)": with_line_suffix("Ст-ть", "Проект"),
+            "Ст-ть (Факт)": with_line_suffix("Ст-ть", "Факт"),
+            "Разница (Ст-ть)": "Разница\n(Ст-ть)",
+            "Ед. изм. (Проект)": with_line_suffix("Ед.изм.", "Проект"),
+            "Ед. изм. (Факт)": with_line_suffix("Ед.изм.", "Факт"),
+        })
+        preferred_order = [
+            "№",
+            "Код расценки",
+            "Наименование",
+            "Ед.изм.",
+            "Раздел",
+            "Подраздел",
+            "Кол-во\n(Проект)",
+            "Кол-во\n(Факт)",
+            "Разница\n(Кол-во)",
+            "Ст-ть\n(Проект)",
+            "Ст-ть\n(Факт)",
+            "Разница\n(Ст-ть)",
+            "Категория",
+        ]
+        detail_columns = [col for col in preferred_order if col in export_detail.columns]
+        detail_columns.extend(col for col in export_detail.columns if col not in detail_columns)
+        export_detail = export_detail[detail_columns]
 
         # 2) Подготовка стилей
         fill_work = PatternFill("solid", fgColor="D6EFD6")
@@ -976,7 +1052,7 @@ class SmetaComparator:
             headers = list(export_detail.columns)
             # ищем нужные индексы
             idx_cat = headers.index("Категория") + 1 if "Категория" in headers else None
-            idx_qty = headers.index("Кол-во (Проект)") + 1 if "Кол-во (Проект)" in headers else None
+            idx_qty = headers.index("Кол-во\n(Проект)") + 1 if "Кол-во\n(Проект)" in headers else None
             idx_compare = headers.index(self.compare_column) + 1 if self.compare_column in headers else None
 
             # проходим по строкам
@@ -1019,11 +1095,19 @@ class SmetaComparator:
                     for c in range(1, len(headers) + 1):
                         ws.cell(row=r - 1, column=c).border = border_b
 
-            apply_readable_sheet_layout(ws, export_detail)
+            apply_readable_sheet_layout(ws, export_detail, max_row_height=None)
             apply_section_row_grouping(ws, export_detail, self.compare_column)
+            autofit_columns_by_name(
+                ws,
+                export_detail,
+                [f"Кол-во\n(Проект)", f"Кол-во\n(Факт)", f"Ст-ть\n(Проект)", f"Ст-ть\n(Факт)"],
+                min_width=12,
+                max_width=24,
+                wrap_lines=2,
+            )
             if "Код расценки" in headers:
                 i = headers.index("Код расценки") + 1
-                ws.column_dimensions[get_column_letter(i)].width = 15
+                ws.column_dimensions[get_column_letter(i)].width = 20
             if "Категория" in headers:
                 i = headers.index("Категория") + 1
                 ws.column_dimensions[get_column_letter(i)].width = 10
@@ -1062,20 +1146,57 @@ class SmetaComparator:
                 {
                     "Раздел": 26,
                     "Подраздел": 28,
-                    "Номер позиции": 14,
-                    "Наименование": 52,
-                    "Кол-во (Проект)": 14,
-                    "Кол-во (Факт)": 14,
-                    "Ст-ть (Проект)": 16,
-                    "Ст-ть (Факт)": 16,
-                    "Разница (Ст-ть)": 16,
+                    "№": 14,
+                    "Наименование": 60,
+                    "Разница\n(Ст-ть)": 16,
                 },
             )
+            autofit_columns_by_name(
+                info_ws,
+                df_info,
+                ["Кол-во\n(Проект)", "Кол-во\n(Факт)", "Ст-ть\n(Проект)", "Ст-ть\n(Факт)"],
+                min_width=12,
+                max_width=24,
+                wrap_lines=2,
+            )
+            cap_row_heights(info_ws, 36)
             for col_index, header in enumerate(df_info.columns, start=1):
                 if "Ст-ть" not in str(header):
                     continue
                 for row_index in range(2, len(df_info) + 2):
                     cell = info_ws.cell(row=row_index, column=col_index)
+                    if isinstance(cell.value, (int, float)) and not pd.isna(cell.value):
+                        cell.number_format = money_format
+
+            df_unit_diff.to_excel(writer, index=False, sheet_name="Отличается единица измерения")
+            unit_ws = writer.sheets["Отличается единица измерения"]
+            apply_readable_sheet_layout(unit_ws, df_unit_diff)
+            apply_named_column_widths(
+                unit_ws,
+                list(df_unit_diff.columns),
+                {
+                    "Раздел": 26,
+                    "Подраздел": 28,
+                    "№": 14,
+                    "Наименование": 52,
+                    "Ед.изм.\n(Проект)": 16,
+                    "Ед.изм.\n(Факт)": 16,
+                    "Разница\n(Ст-ть)": 16,
+                },
+            )
+            autofit_columns_by_name(
+                unit_ws,
+                df_unit_diff,
+                ["Кол-во\n(Проект)", "Кол-во\n(Факт)", "Ст-ть\n(Проект)", "Ст-ть\n(Факт)"],
+                min_width=12,
+                max_width=24,
+                wrap_lines=2,
+            )
+            for col_index, header in enumerate(df_unit_diff.columns, start=1):
+                if "Ст-ть" not in str(header):
+                    continue
+                for row_index in range(2, len(df_unit_diff) + 2):
+                    cell = unit_ws.cell(row=row_index, column=col_index)
                     if isinstance(cell.value, (int, float)) and not pd.isna(cell.value):
                         cell.number_format = money_format
 
@@ -1095,7 +1216,8 @@ class SmetaComparator:
             )
             legend.to_excel(writer, index=False, sheet_name="Файлы")
             files_ws = writer.sheets["Файлы"]
-            apply_readable_sheet_layout(files_ws, legend, name_column="Файл")
+            apply_readable_sheet_layout(files_ws, legend, name_column="Файл", no_wrap_columns={"Файл"})
+            autofit_columns_by_name(files_ws, legend, ["Файл"], min_width=30, max_width=120, wrap_lines=1)
             if "Общая стоимость" in legend.columns:
                 cost_col = list(legend.columns).index("Общая стоимость") + 1
                 for row_index in range(2, len(legend) + 2):

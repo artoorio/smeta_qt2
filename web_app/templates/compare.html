@@ -4,7 +4,7 @@
   <header class="hero">
     <p class="eyebrow">Smeta Toolkit · Web</p>
     <h1>Сравнение смет</h1>
-    <p>Выберите проектную и фактическую версии, настройте колонки и получите отчёт/сводку/список отсутствий.</p>
+    <p>Выберите проектную и фактическую версии и получите светлый отчёт с теми же названиями колонок и форматированием, что и в Excel.</p>
     <div class="actions">
       <a class="ghost" href="/">Главная</a>
       <a class="ghost" href="/process">Обработка</a>
@@ -24,19 +24,19 @@
       <div class="columns-grid">
         <label>
           Колонка сравнения
-          <input name="compareColumn" value="Наименование" />
+          <input name="compareColumn" value="Наименование" readonly />
         </label>
         <label>
           Колонка стоимости
-          <input name="valueColumn" value="Стоимость" />
+          <input name="valueColumn" value="Количество,Стоимость" readonly />
         </label>
         <label>
-          «Доп. колонки» (через запятую)
-          <input name="extraColumns" />
+          Доп. колонки (можно отключать)
+          <input name="extraColumns" value="Единица измерения,Код расценки" />
         </label>
         <label>
-          Подраздел (если есть)
-          <input name="subsectionColumn" value="Подраздел" />
+          Подраздел
+          <input name="subsectionColumn" value="Подраздел" readonly />
         </label>
       </div>
       <button type="submit" class="primary">Сравнить</button>
@@ -48,7 +48,17 @@
       <button class="ghost" data-compare-export="diff">Excel diff</button>
     </div>
     <div id="compare-missing" class="missing-card"></div>
-    <div id="compare-detail" class="table-wrapper"></div>
-    <div id="compare-summary-table" class="table-wrapper"></div>
+    <div class="sheet-tabs" id="compare-sheet-tabs" hidden>
+      <button type="button" class="sheet-tab active" data-sheet-target="compare-detail">Customer</button>
+      <button type="button" class="sheet-tab" data-sheet-target="compare-summary-table">Summary</button>
+      <button type="button" class="sheet-tab" data-sheet-target="compare-info">Инфо</button>
+      <button type="button" class="sheet-tab" data-sheet-target="compare-unit-diff">Отличается ед. изм.</button>
+      <button type="button" class="sheet-tab" data-sheet-target="compare-files">Файлы</button>
+    </div>
+    <div id="compare-detail" class="table-wrapper sheet-panel"></div>
+    <div id="compare-summary-table" class="table-wrapper sheet-panel" hidden></div>
+    <div id="compare-info" class="table-wrapper sheet-panel" hidden></div>
+    <div id="compare-unit-diff" class="table-wrapper sheet-panel" hidden></div>
+    <div id="compare-files" class="table-wrapper sheet-panel" hidden></div>
   </section>
 {% endblock %}

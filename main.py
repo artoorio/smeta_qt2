@@ -3,13 +3,14 @@ from pathlib import Path
 from typing import List
 import logging
 from datetime import datetime
+import math
 
 import pandas as pd
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QPushButton, QListWidget,
     QListWidgetItem, QFileDialog, QHBoxLayout, QMessageBox, QLabel,
-    QStackedWidget, QMainWindow, QHeaderView
+    QStackedWidget, QMainWindow, QHeaderView, QTableView
 )
 from column_order_dialog import ColumnOrderDialog
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -79,37 +80,60 @@ def offer_open_file(parent, path: str, title: str = "Готово", label: str =
             QMessageBox.warning(parent, "Не удалось открыть файл", str(e))
 
 
-def configure_table_view(view: QTableView, df: pd.DataFrame) -> None:
+def configure_table_view(view: QTableView, df: pd.DataFrame, mode: str = "default") -> None:
     header = view.horizontalHeader()
-    header.setStretchLastSection(True)
+    header.setStretchLastSection(False)
     header.setSectionResizeMode(QHeaderView.Interactive)
+    view.setWordWrap(True)
 
-    width_map = {
-        "№": 60,
-        "Раздел": 180,
-        "Название раздела": 220,
-        "Подраздел": 220,
-        "Номер позиции": 110,
-        "Код расценки": 150,
-        "Наименование": 420,
-        "Единица измерения": 110,
-        "Категория": 110,
-    }
+    fm = view.fontMetrics()
+    sample_limit = min(len(df), 200)
+
+    def max_text_length(series: pd.Series, default: str = "") -> int:
+        values = [default]
+        if sample_limit:
+            values.extend("" if pd.isna(v) else str(v) for v in series.head(sample_limit))
+        max_len = 0
+        for value in values:
+            for part in str(value).split("\n"):
+                max_len = max(max_len, len(part))
+        return max_len
+
+    def compute_width(col: str) -> int:
+        header_len = max(len(part) for part in col.split("\n"))
+        content_len = max_text_length(df[col], col)
+        effective_len = max(header_len, min(content_len, 80))
+        pixel_width = fm.horizontalAdvance("W" * max(1, effective_len)) + 28
+
+        if mode == "unit_diff" and col in {"Подраздел", "Наименование"}:
+            wrapped_len = max(header_len, math.ceil(min(content_len, 150) / 3))
+            wrapped_width = fm.horizontalAdvance("W" * max(1, wrapped_len)) + 28
+            return max(250, min(560, wrapped_width))
+
+        if col == "№":
+            return 60
+        if col in {"Код расценки", "№ позиции"}:
+            return max(105, min(160, pixel_width))
+        if col in {"Ед.изм.", "Ед.изм.\n(Проект)", "Ед.изм.\n(Факт)", "Единица измерения"}:
+            return max(90, min(120, pixel_width))
+        if "Кол-во" in col or "Количество" in col:
+            return max(78, min(95, pixel_width))
+        if "Ст-ть" in col or "Стоимость" in col or "Разница" in col:
+            return max(105, min(145, pixel_width))
+        if col == "Наименование":
+            return max(320, min(560, pixel_width))
+        if col in {"Раздел", "Название раздела"}:
+            return max(150, min(260, pixel_width))
+        if col == "Подраздел":
+            return max(180, min(320, pixel_width))
+        if col == "Файл":
+            return max(260, min(520, pixel_width))
+        return max(100, min(240, pixel_width))
 
     for idx, col_name in enumerate(df.columns):
-        col = str(col_name)
-        width = width_map.get(col)
-        if width is None:
-            if "Кол-во" in col or "Количество" in col:
-                width = 110
-            elif "Ст-ть" in col or "Стоимость" in col or "Разница" in col:
-                width = 125
-            else:
-                width = 140
-        view.setColumnWidth(idx, width)
+        view.setColumnWidth(idx, compute_width(str(col_name)))
 
     view.resizeRowsToContents()
-    view.setWordWrap(True)
 
 
 def prepare_compare_display_frames(cmp_obj, df_detail: pd.DataFrame, df_summary: pd.DataFrame, df_info: pd.DataFrame):
@@ -121,27 +145,54 @@ def prepare_compare_display_frames(cmp_obj, df_detail: pd.DataFrame, df_summary:
     def shorten_metric(name: str) -> str:
         return short_names.get(name, name)
 
+    def with_line_suffix(label: str, suffix: str) -> str:
+        return f"{label}\n({suffix})"
+
     detail_renames = {}
     summary_renames = {}
     for value_name in cmp_obj.value_column:
         short_value = shorten_metric(value_name)
-        detail_renames[f"{value_name} ({cmp_obj.file1_name})"] = f"{short_value} (Проект)"
-        detail_renames[f"{value_name} ({cmp_obj.file2_name})"] = f"{short_value} (Факт)"
-        detail_renames[f"Разница ({value_name})"] = f"Разница ({short_value})"
-    summary_renames[f"Стоимость ({cmp_obj.file1_name})"] = "Ст-ть (Проект)"
-    summary_renames[f"Стоимость ({cmp_obj.file2_name})"] = "Ст-ть (Факт)"
-    summary_renames["Разница (Стоимость)"] = "Разница (Ст-ть)"
+        detail_renames[f"{value_name} ({cmp_obj.file1_name})"] = with_line_suffix(short_value, "Проект")
+        detail_renames[f"{value_name} ({cmp_obj.file2_name})"] = with_line_suffix(short_value, "Факт")
+        detail_renames[f"Разница ({value_name})"] = f"Разница\n({short_value})"
+    summary_renames[f"Стоимость ({cmp_obj.file1_name})"] = with_line_suffix("Ст-ть", "Проект")
+    summary_renames[f"Стоимость ({cmp_obj.file2_name})"] = with_line_suffix("Ст-ть", "Факт")
+    summary_renames["Разница (Стоимость)"] = "Разница\n(Ст-ть)"
 
     detail_view = df_detail.rename(columns=detail_renames)
     summary_view = df_summary.rename(columns=summary_renames)
-    info_view = df_info.copy()
+    info_view = df_info.rename(columns={
+        "Номер позиции": "№",
+        "Единица измерения": "Ед.изм.",
+        "Кол-во (Проект)": with_line_suffix("Кол-во", "Проект"),
+        "Кол-во (Факт)": with_line_suffix("Кол-во", "Факт"),
+        "Ст-ть (Проект)": with_line_suffix("Ст-ть", "Проект"),
+        "Ст-ть (Факт)": with_line_suffix("Ст-ть", "Факт"),
+        "Разница (Ст-ть)": "Разница\n(Ст-ть)",
+        "Ед. изм. (Проект)": with_line_suffix("Ед.изм.", "Проект"),
+        "Ед. изм. (Факт)": with_line_suffix("Ед.изм.", "Факт"),
+    })
 
-    if "Код расценки" in detail_view.columns and "Наименование" in detail_view.columns:
-        detail_columns = list(detail_view.columns)
-        detail_columns.remove("Код расценки")
-        name_index = detail_columns.index("Наименование")
-        detail_columns.insert(name_index, "Код расценки")
-        detail_view = detail_view[detail_columns]
+    detail_view = detail_view.rename(columns={"Единица измерения": "Ед.изм."})
+
+    preferred_order = [
+        "№",
+        "Код расценки",
+        "Наименование",
+        "Ед.изм.",
+        "Раздел",
+        "Подраздел",
+        "Кол-во\n(Проект)",
+        "Кол-во\n(Факт)",
+        "Разница\n(Кол-во)",
+        "Ст-ть\n(Проект)",
+        "Ст-ть\n(Факт)",
+        "Разница\n(Ст-ть)",
+        "Категория",
+    ]
+    detail_columns = [col for col in preferred_order if col in detail_view.columns]
+    detail_columns.extend(col for col in detail_view.columns if col not in detail_columns)
+    detail_view = detail_view[detail_columns]
 
     return detail_view, summary_view, info_view
 
@@ -161,6 +212,13 @@ def build_compare_files_frame(cmp_obj) -> pd.DataFrame:
             },
         ]
     )
+
+
+def get_default_compare_column_order(columns: list[str]) -> list[str]:
+    preferred = ["№", "Код расценки", "Наименование", "Единица измерения"]
+    ordered = [col for col in preferred if col in columns]
+    ordered.extend(col for col in columns if col not in ordered)
+    return ordered
 
 def load_materials_path() -> str | None:
     if os.path.exists(_MATERIALS_PREFS):
@@ -203,35 +261,29 @@ from PyQt5.QtWidgets import (
 
 
 class ColumnSelectDialog(QDialog):
-    """Диалог выбора колонок с запоминанием последнего набора."""
+    """Диалог выбора доп. колонок для сравнения."""
 
     def __init__(self, columns: List[str], parent=None):
         super().__init__(parent)
         self.setWindowTitle("Выбор колонок для сравнения")
-        self.resize(450, 500)
+        self.resize(450, 420)
 
         layout = QVBoxLayout(self)
+        self.fixed_compare_column = "Наименование"
+        self.fixed_value_columns = ["Количество", "Стоимость"]
+        self.fixed_subsection_column = "Подраздел"
+        self.default_extra_columns = {"Единица измерения", "Код расценки"}
 
-        # --- compare_column (одиночный выбор) ---
-        self.cb_compare = QComboBox()
-        self.cb_compare.addItems(columns)
-        layout.addLayout(self._row("Колонка-ключ (compare_column):", self.cb_compare))
-
-        # --- value_column (множественный выбор) ---
-        layout.addWidget(QLabel("Колонки стоимости (value_column):"))
-        self.value_list = QListWidget()
-        self.value_list.setSelectionMode(QListWidget.MultiSelection)
-        for c in columns:
-            self.value_list.addItem(QListWidgetItem(c))
-        layout.addWidget(self.value_list)
-
-        # --- subsection_column (необ.) ---
-        self.cb_sub = QComboBox()
-        self.cb_sub.addItems([""] + columns)
-        layout.addLayout(self._row("Подраздел (subsection_column):", self.cb_sub))
+        fixed_info = QLabel(
+            "Колонка-ключ: Наименование\n"
+            "Колонки сравнения: Количество, Стоимость\n"
+            "Подраздел: Подраздел"
+        )
+        fixed_info.setWordWrap(True)
+        layout.addWidget(fixed_info)
 
         # --- extra_column (множественный выбор) ---
-        layout.addWidget(QLabel("Доп. колонки (extra_column):"))
+        layout.addWidget(QLabel("Доп. колонки (можно отключить):"))
         self.extra_list = QListWidget()
         self.extra_list.setSelectionMode(QListWidget.MultiSelection)
         for c in columns:
@@ -250,36 +302,20 @@ class ColumnSelectDialog(QDialog):
     # --------------------------------------------------------------
     def _apply_saved(self, columns: List[str]):
         prefs = _load_prefs()
-        if not prefs:
-            return
-
-        if prefs.get("compare_column") in columns:
-            self.cb_compare.setCurrentText(prefs["compare_column"])
-
-        saved_values = prefs.get("value_column", [])
-        if isinstance(saved_values, str):
-            saved_values = [saved_values]
-        for i in range(self.value_list.count()):
-            item = self.value_list.item(i)
-            if item.text() in saved_values:
-                item.setSelected(True)
-
-        if prefs.get("subsection_column") in columns:
-            self.cb_sub.setCurrentText(prefs["subsection_column"] or "")
-
-        saved_extra = prefs.get("extra_column", [])
+        saved_extra = prefs.get("extra_column", []) if prefs else []
+        selected_extra = set(saved_extra) | self.default_extra_columns
         for i in range(self.extra_list.count()):
             item = self.extra_list.item(i)
-            if item.text() in saved_extra:
+            if item.text() in selected_extra:
                 item.setSelected(True)
 
     # --------------------------------------------------------------
     def _on_accept(self):
         # сохраняем выбор
         prefs = {
-            "compare_column": self.cb_compare.currentText(),
-            "value_column": [i.text() for i in self.value_list.selectedItems()],
-            "subsection_column": self.cb_sub.currentText() or None,
+            "compare_column": self.fixed_compare_column,
+            "value_column": self.fixed_value_columns,
+            "subsection_column": self.fixed_subsection_column,
             "extra_column": [i.text() for i in self.extra_list.selectedItems()],
         }
         _save_prefs(prefs)
@@ -296,13 +332,11 @@ class ColumnSelectDialog(QDialog):
     # результат для вызывающего окна
     def get_selection(self) -> Tuple[str, List[str], List[str], Optional[str]]:
         extras = [i.text() for i in self.extra_list.selectedItems()]
-        value_cols = [i.text() for i in self.value_list.selectedItems()]
-        subcol = self.cb_sub.currentText() or None
         return (
-            self.cb_compare.currentText(),
-            value_cols,
+            self.fixed_compare_column,
+            self.fixed_value_columns,
             extras,
-            subcol
+            self.fixed_subsection_column,
         )
 # ╭──────────────────╮
 # │  Поток обработки │
@@ -723,7 +757,7 @@ class CompareWindow(QWidget):
         self._cmp = cmp_obj
 
         # диалог порядка колонок
-        cols = list(df.columns)
+        cols = get_default_compare_column_order(list(df.columns))
         dlg_order = ColumnOrderDialog(cols, self)
         if dlg_order.exec_() == QDialog.Accepted:
             self._col_order = dlg_order.result_order()
@@ -736,12 +770,23 @@ class CompareWindow(QWidget):
         df_detail = df
         df_summary = cmp_obj.generate_subsection_summary()
         df_info = cmp_obj.generate_top_difference_report()
+        df_unit_diff = cmp_obj.generate_unit_difference_report()
         df_detail, df_summary, df_info = prepare_compare_display_frames(
             cmp_obj,
             df_detail,
             df_summary,
             df_info,
         )
+        df_unit_diff = df_unit_diff.rename(columns={
+            "№": "№",
+            "Ед. изм. (Проект)": "Ед.изм.\n(Проект)",
+            "Ед. изм. (Факт)": "Ед.изм.\n(Факт)",
+            "Кол-во (Проект)": "Кол-во\n(Проект)",
+            "Кол-во (Факт)": "Кол-во\n(Факт)",
+            "Ст-ть (Проект)": "Ст-ть\n(Проект)",
+            "Ст-ть (Факт)": "Ст-ть\n(Факт)",
+            "Разница (Ст-ть)": "Разница\n(Ст-ть)",
+        })
         df_files = build_compare_files_frame(cmp_obj)
 
         # собираем вкладки
@@ -783,6 +828,14 @@ class CompareWindow(QWidget):
         configure_table_view(tv4, df_files)
         lay4.addWidget(tv4)
         tabs.addTab(w4, "Файлы")
+
+        w5 = QWidget();
+        lay5 = QVBoxLayout(w5)
+        tv5 = QTableView();
+        tv5.setModel(PandasModel(df_unit_diff))
+        configure_table_view(tv5, df_unit_diff, mode="unit_diff")
+        lay5.addWidget(tv5)
+        tabs.addTab(w5, "Отличается ед. изм.")
 
         # собрать диалог
         dlg_layout = QVBoxLayout(dlg)
@@ -850,7 +903,7 @@ class CompareWindow(QWidget):
 # ╭──────────────────╮
 # │  Диалог-таблица  │
 # ╰──────────────────╯
-from PyQt5.QtWidgets import QDialog, QTableView
+from PyQt5.QtWidgets import QDialog
 
 class TableDialog(QDialog):
     def __init__(self, df: pd.DataFrame, title: str):

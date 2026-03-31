@@ -11,39 +11,166 @@ const dom = {
   processTable: document.getElementById("process-table"),
   compareForm: document.getElementById("compare-form"),
   compareMissing: document.getElementById("compare-missing"),
+  compareFiles: document.getElementById("compare-files"),
   compareDetail: document.getElementById("compare-detail"),
   compareSummary: document.getElementById("compare-summary-table"),
+  compareInfo: document.getElementById("compare-info"),
+  compareUnitDiff: document.getElementById("compare-unit-diff"),
+  compareSheetTabs: document.getElementById("compare-sheet-tabs"),
   materialsTable: document.getElementById("materials-table"),
   materialsForm: document.getElementById("materials-form"),
   materialsSummary: document.getElementById("materials-summary"),
 };
 
+const compareSheetOrder = [
+  "compare-detail",
+  "compare-summary-table",
+  "compare-info",
+  "compare-unit-diff",
+  "compare-files",
+];
+
 function escapeText(value) {
   return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function renderTable(container, data) {
+function headerIsNumeric(col) {
+  return ["Кол-во", "Количество", "Ст-ть", "Стоимость", "Разница", "Материалы", "Общая стоимость"].some((token) =>
+    String(col).includes(token)
+  );
+}
+
+function headerIsCode(col) {
+  return ["№", "Код расценки", "Ед.изм.", "Единица измерения"].includes(String(col));
+}
+
+function toNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+  const normalized = value.replace(/\s+/g, "").replace(",", ".").trim();
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatValue(col, value) {
+  const num = toNumber(value);
+  if (num !== null && headerIsNumeric(col)) {
+    const hasFraction = Math.abs(num % 1) > 0.000001;
+    return num.toLocaleString("ru-RU", {
+      minimumFractionDigits: hasFraction ? 2 : 0,
+      maximumFractionDigits: hasFraction ? 2 : 0,
+    });
+  }
+  return String(value ?? "");
+}
+
+function suggestWidthCh(col, rows) {
+  const lines = String(col).split("\n");
+  rows.slice(0, 200).forEach((row) => {
+    formatValue(col, row[col])
+      .split("\n")
+      .forEach((line) => lines.push(line));
+  });
+  const maxLen = lines.reduce((acc, line) => Math.max(acc, line.length), 0);
+  const compareMetricColumns = new Set([
+    "Кол-во\n(Проект)",
+    "Кол-во\n(Факт)",
+    "Разница\n(Кол-во)",
+    "Ст-ть\n(Проект)",
+    "Ст-ть\n(Факт)",
+    "Разница\n(Ст-ть)",
+  ]);
+  if (col === "№") {
+    return Math.max(6, Math.min(10, maxLen + 2));
+  }
+  if (col === "Наименование") {
+    return Math.max(24, Math.min(80, Math.ceil(maxLen / 4) + 2));
+  }
+  if (col === "Подраздел") {
+    return Math.max(18, Math.min(36, Math.ceil(maxLen / 3) + 2));
+  }
+  if (col === "Файл") {
+    return Math.max(30, Math.min(120, maxLen + 2));
+  }
+  if (compareMetricColumns.has(String(col))) {
+    return Math.max(6, Math.min(20, maxLen + 2));
+  }
+  if (headerIsNumeric(col)) {
+    return Math.max(6, Math.min(20, maxLen + 2));
+  }
+  if (["Ед.изм.", "Единица измерения", "Ед.изм.\n(Проект)", "Ед.изм.\n(Факт)"].includes(String(col))) {
+    return Math.max(6, Math.min(14, maxLen + 2));
+  }
+  if (headerIsCode(col)) {
+    return Math.max(8, Math.min(22, maxLen + 2));
+  }
+  return Math.max(12, Math.min(36, maxLen + 2));
+}
+
+function detectRowClass(columns, row) {
+  const values = columns.map((col) => String(row[col] ?? "").trim());
+  if (values.some((value) => value.startsWith("--"))) return "row-divider";
+  const category = String(row["Категория"] ?? "").trim();
+  const quantity = toNumber(row["Количество"]);
+  if (category === "Работа") return "row-work";
+  if (category === "Материалы") return quantity !== null && quantity < 0 ? "row-material-negative" : "row-material";
+  if (category === "Механизмы") return "row-machinery";
+  return "";
+}
+
+function renderTable(container, data, title = "") {
   if (!container) return;
   container.innerHTML = "";
+  if (title) {
+    const h3 = document.createElement("h3");
+    h3.className = "section-title";
+    h3.textContent = title;
+    container.appendChild(h3);
+  }
   if (!data?.rows?.length) {
-    container.innerHTML = "<p class='summary'>Нет строк для отображения.</p>";
+    const empty = document.createElement("p");
+    empty.className = "summary";
+    empty.textContent = "Нет строк для отображения.";
+    container.appendChild(empty);
     return;
   }
   const table = document.createElement("table");
+  table.className = "report-table";
+  const colgroup = document.createElement("colgroup");
+  data.columns.forEach((col) => {
+    const colEl = document.createElement("col");
+    const width = suggestWidthCh(col, data.rows);
+    colEl.style.width = `${width}ch`;
+    colEl.style.minWidth = `${Math.max(10, width - 2)}ch`;
+    colgroup.appendChild(colEl);
+  });
+  table.appendChild(colgroup);
   const thead = document.createElement("thead");
   const headerRow = document.createElement("tr");
   data.columns.forEach((col) => {
     const th = document.createElement("th");
-    th.textContent = col;
+    th.className = headerIsNumeric(col) ? "col-numeric" : "col-text";
+    th.innerHTML = escapeText(col).replace(/\n/g, "<br>");
     headerRow.appendChild(th);
   });
   thead.appendChild(headerRow);
   const tbody = document.createElement("tbody");
   data.rows.forEach((row) => {
     const tr = document.createElement("tr");
+    const rowClass = detectRowClass(data.columns, row);
+    if (rowClass) tr.className = rowClass;
     data.columns.forEach((col) => {
       const td = document.createElement("td");
-      td.textContent = escapeText(row[col]);
+      const classes = [headerIsNumeric(col) ? "col-numeric" : "col-text"];
+      if (col === "Наименование") classes.push("col-name");
+      if (col === "Файл") classes.push("no-wrap");
+      if (String(col).startsWith("Разница")) {
+        const diff = toNumber(row[col]);
+        if (diff !== null) classes.push(diff > 0 ? "diff-positive" : diff < 0 ? "diff-negative" : "diff-zero");
+      }
+      td.className = classes.join(" ");
+      td.innerHTML = escapeText(formatValue(col, row[col])).replace(/\n/g, "<br>");
       tr.appendChild(td);
     });
     tbody.appendChild(tr);
@@ -76,6 +203,17 @@ function renderMissingList(list) {
   dom.compareMissing.appendChild(ul);
 }
 
+function activateSheet(targetId) {
+  if (!dom.compareSheetTabs) return;
+  compareSheetOrder.forEach((id) => {
+    const panel = document.getElementById(id);
+    if (panel) panel.hidden = id !== targetId;
+  });
+  dom.compareSheetTabs.querySelectorAll(".sheet-tab").forEach((button) => {
+    button.classList.toggle("active", button.dataset.sheetTarget === targetId);
+  });
+}
+
 function showMaterialsStatus(message, tone = "info") {
   if (!dom.materialsSummary) return;
   dom.materialsSummary.textContent = message;
@@ -92,7 +230,7 @@ async function loadMaterialsView() {
       throw new Error(await response.text() || "Не удалось загрузить данные.");
     }
     const payload = await response.json();
-    renderTable(container, payload);
+    renderTable(container, payload, "Материалы");
   } catch (error) {
     container.innerHTML = `<p class='summary'>${error.message}</p>`;
   }
@@ -155,7 +293,7 @@ async function handleProcessSubmit(event) {
       `Строк: ${payload.row_count}, общая стоимость: ${Number(payload.total_cost).toLocaleString()} ₽`,
       "success"
     );
-    renderTable(dom.processTable, payload);
+    renderTable(dom.processTable, payload, "Обработанные строки");
   } catch (error) {
     showProcessStatus(error.message, "error");
   }
@@ -214,9 +352,16 @@ async function handleCompareSubmit(event) {
   try {
     const payload = await fetchJson("/api/compare", formData);
     state.reportId = payload.report_id;
-    renderTable(dom.compareDetail, payload.detail);
-    renderTable(dom.compareSummary, payload.summary);
+    renderTable(dom.compareFiles, payload.files, "Файлы");
+    renderTable(dom.compareDetail, payload.detail, "Customer");
+    renderTable(dom.compareSummary, payload.summary, "Summary");
+    renderTable(dom.compareInfo, payload.info, "Инфо");
+    renderTable(dom.compareUnitDiff, payload.unit_diff, "Отличается единица измерения");
     renderMissingList(payload.missing);
+    if (dom.compareSheetTabs) {
+      dom.compareSheetTabs.hidden = false;
+      activateSheet("compare-detail");
+    }
   } catch (error) {
     if (dom.compareDetail) {
       dom.compareDetail.innerHTML = `<p class='summary'>${error.message}</p>`;
@@ -277,6 +422,11 @@ document.addEventListener("DOMContentLoaded", () => {
       state.compareFiles.fact = event.target.files[0] || null;
     });
     dom.compareForm.addEventListener("submit", handleCompareSubmit);
+  }
+  if (dom.compareSheetTabs) {
+    dom.compareSheetTabs.querySelectorAll(".sheet-tab").forEach((button) => {
+      button.addEventListener("click", () => activateSheet(button.dataset.sheetTarget));
+    });
   }
   document.querySelectorAll("[data-compare-export]").forEach((button) => {
     button.addEventListener("click", () => handleCompareExport(button.dataset.compareExport));
