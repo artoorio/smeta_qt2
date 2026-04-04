@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <header class="hero">
+    <p class="eyebrow">Smeta Toolkit · Web</p>
+    <h1>Обработка2</h1>
+    <p>Тестовый режим на шаблоне сравнения смет: один файл, та же структура вкладок, те же кнопки экспорта, без сравнения с другим файлом.</p>
+    <div class="actions">
+      <a class="ghost" href="/">Главная</a>
+      <a class="ghost" href="/process">Обычная обработка</a>
+      <a class="ghost" href="/compare">Сравнение</a>
+    </div>
+  </header>
+
+  <section class="card">
+    <form id="process2-form" action="/api/process2" method="post" enctype="multipart/form-data" novalidate>
+      <label>
+        Смета (необязательно, если пусто возьмется `проект.xlsx`)
+        <input type="file" name="file" accept=".xlsx,.xls" />
+      </label>
+      <label>
+        Файл цен на материалы (опционально)
+        <input type="file" name="materials" accept=".xlsx,.xls" />
+      </label>
+      <button type="submit" class="primary">Сформировать</button>
+    </form>
+    <div class="actions">
+      <button class="ghost" data-process2-export="html">HTML</button>
+      <button class="ghost" data-process2-export="excel">Excel</button>
+      <button class="ghost" data-process2-export="missing">TXT отсутствия</button>
+      <button class="ghost" data-process2-export="diff">Excel diff</button>
+    </div>
+    <div id="process2-missing" class="missing-card"></div>
+    <div class="sheet-tabs" id="process2-sheet-tabs" hidden>
+      <button type="button" class="sheet-tab active" data-process2-sheet-target="process2-detail">Customer</button>
+      <button type="button" class="sheet-tab" data-process2-sheet-target="process2-summary">Summary</button>
+      <button type="button" class="sheet-tab" data-process2-sheet-target="process2-info">Инфо</button>
+      <button type="button" class="sheet-tab" data-process2-sheet-target="process2-unit-diff">Отличается ед. изм.</button>
+      <button type="button" class="sheet-tab" data-process2-sheet-target="process2-files">Файлы</button>
+    </div>
+    <div class="inline-filter" id="process2-filter-bar" hidden>
+      <input
+        type="text"
+        id="process2-filter-input"
+        placeholder="Фильтр Customer: раздел, подраздел, код, наименование, ед.изм., числа"
+      />
+      <button type="button" class="ghost" id="process2-filter-clear">Сбросить</button>
+    </div>
+    <div class="inline-filter" id="process2-sort-bar" hidden>
+      <label class="sort-select-wrap">
+        <span>Сортировка</span>
+        <select id="process2-sort-column"></select>
+      </label>
+      <button type="button" class="ghost" id="process2-sort-direction">↓</button>
+      <button type="button" class="ghost" id="process2-sort-reset">Сбросить сортировку</button>
+    </div>
+    <div id="process2-detail" class="table-wrapper sheet-panel"></div>
+    <div class="inline-filter" id="process2-summary-view-bar" hidden>
+      <button type="button" class="ghost active" id="process2-summary-by-subsection">По подразделам</button>
+      <button type="button" class="ghost" id="process2-summary-by-section">По разделам</button>
+    </div>
+    <div id="process2-summary" class="table-wrapper sheet-panel" hidden></div>
+    <div id="process2-info" class="table-wrapper sheet-panel" hidden></div>
+    <div id="process2-unit-diff" class="table-wrapper sheet-panel" hidden></div>
+    <div id="process2-files" class="table-wrapper sheet-panel" hidden></div>
+  </section>
+{% endblock %}
+
+{% block shared_scripts %}
+  <script src="/static/process2.js" defer></script>
+{% endblock %}
+
+{% block page_scripts %}
+{% endblock %}

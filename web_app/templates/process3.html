@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <header class="hero">
+    <p class="eyebrow">Smeta Toolkit · Web</p>
+    <h1>Обработка3</h1>
+    <p>Единый режим для анализа одной сметы и для сравнения двух смет. Логика рендеринга опирается на общий табличный core, чтобы гистограммы, сортировки и навигация работали одинаково предсказуемо.</p>
+    <div class="actions">
+      <a class="ghost" href="/">Главная</a>
+      <a class="ghost" href="/process">Обычная обработка</a>
+      <a class="ghost" href="/process2">Обработка2</a>
+      <a class="ghost" href="/compare">Сравнение</a>
+    </div>
+  </header>
+
+  <section class="card">
+    <div class="inline-filter" id="process3-mode-bar">
+      <button type="button" class="ghost active" data-process3-mode="single">Анализ сметы</button>
+      <button type="button" class="ghost" data-process3-mode="compare">Сравнение двух смет</button>
+    </div>
+    <form id="process3-form" action="/api/process3" method="post" enctype="multipart/form-data" novalidate>
+      <input type="hidden" name="mode" id="process3-mode-input" value="single" />
+      <label>
+        Смета
+        <input type="file" name="file1" accept=".xlsx,.xls" />
+      </label>
+      <label id="process3-file2-wrap" hidden>
+        Вторая смета для сравнения
+        <input type="file" name="file2" accept=".xlsx,.xls" />
+      </label>
+      <label id="process3-materials-wrap">
+        Файл цен на материалы (опционально)
+        <input type="file" name="materials" accept=".xlsx,.xls" />
+      </label>
+      <button type="submit" class="primary">Сформировать</button>
+    </form>
+    <div class="actions">
+      <button class="ghost" data-process3-export="html">HTML</button>
+      <button class="ghost" data-process3-export="excel">Excel</button>
+      <button class="ghost" data-process3-export="missing">TXT отсутствия</button>
+      <button class="ghost" data-process3-export="diff">Excel diff</button>
+    </div>
+    <div id="process3-status" class="summary"></div>
+    <div class="sheet-tabs" id="process3-sheet-tabs" hidden>
+      <button type="button" class="sheet-tab active" data-process3-sheet-target="process3-detail">Данные</button>
+      <button type="button" class="sheet-tab" data-process3-sheet-target="process3-summary">Итоги</button>
+      <button type="button" class="sheet-tab" data-process3-sheet-target="process3-info">Инфо</button>
+      <button type="button" class="sheet-tab" data-process3-sheet-target="process3-unit-diff">Отличается ед. изм.</button>
+      <button type="button" class="sheet-tab" data-process3-sheet-target="process3-files">Файлы</button>
+    </div>
+    <div class="inline-filter" id="process3-filter-bar" hidden>
+      <input
+        type="text"
+        id="process3-filter-input"
+        placeholder="Фильтр таблицы: раздел, подраздел, код, наименование, ед.изм., числа"
+      />
+      <button type="button" class="ghost" id="process3-filter-clear">Сбросить</button>
+    </div>
+    <div class="inline-filter" id="process3-summary-view-bar" hidden>
+      <button type="button" class="ghost active" id="process3-summary-by-subsection">По подразделам</button>
+      <button type="button" class="ghost" id="process3-summary-by-section">По разделам</button>
+    </div>
+    <div id="process3-detail" class="table-wrapper sheet-panel"></div>
+    <div id="process3-summary" class="table-wrapper sheet-panel" hidden></div>
+    <div id="process3-info" class="table-wrapper sheet-panel" hidden></div>
+    <div id="process3-unit-diff" class="table-wrapper sheet-panel" hidden></div>
+    <div id="process3-files" class="table-wrapper sheet-panel" hidden></div>
+  </section>
+{% endblock %}
+
+{% block page_scripts %}
+  <script src="/static/process3.js" defer></script>
+{% endblock %}
+
+{% block app_script %}{% endblock %}
