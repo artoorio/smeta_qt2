@@ -29,6 +29,19 @@
       <button class="ghost" data-export-mode="html">HTML</button>
     </div>
     <div id="process-summary" class="summary"></div>
-    <div id="process-table" class="table-wrapper"></div>
+    <div class="sheet-tabs" id="process-sheet-tabs">
+      <button type="button" class="sheet-tab active" data-process-sheet-target="process-table">Данные</button>
+      <button type="button" class="sheet-tab" data-process-sheet-target="process-files">Файлы</button>
+    </div>
+    <div class="inline-filter" id="process-filter-bar">
+      <input
+        type="text"
+        id="process-filter-input"
+        placeholder="Фильтр обработки: объект, раздел, подраздел, код, наименование, ед.изм., числа"
+      />
+      <button type="button" class="ghost" id="process-filter-clear">Сбросить</button>
+    </div>
+    <div id="process-table" class="table-wrapper sheet-panel"></div>
+    <div id="process-files" class="table-wrapper sheet-panel" hidden></div>
   </section>
 {% endblock %}

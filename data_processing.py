@@ -110,6 +110,14 @@ class Smeta:
 
         return False
 
+    @staticmethod
+    def _is_inline_material_position(parent_position: Any, current_position: Any) -> bool:
+        parent = str(parent_position or "").strip()
+        current = str(current_position or "").strip()
+        if not parent or not current or "." not in current:
+            return False
+        return current.startswith(f"{parent}.") and re.fullmatch(rf"{re.escape(parent)}\.\d+", current) is not None
+
     # ───── 2.1 Найти первую строку-раздел ─────
     def _find_section_start_and_maybe_switch_columns(self) -> Optional[int]:
         """Возвратить строку первого 'Раздел N.' и, если нужно, скорректировать cfg."""
@@ -196,6 +204,8 @@ class Smeta:
         current_subsection = None
         parsing_position = False
         position_data: Dict[str, Any] = {}
+        inline_material_total = 0.0
+        pending_inline_rows: List[Dict[str, Any]] = []
 
 
 
@@ -223,9 +233,44 @@ class Smeta:
             is_position = self._is_position_number(cell_a) and bool(cell_b)
 
             if is_position:
+                if (
+                    parsing_position
+                    and self._is_inline_material_position(position_data.get("Номер позиции"), cell_a)
+                    and row[cost_c] is not None
+                ):
+                    inline_cost = row[cost_c] or 0
+                    category = self._get_category(cell_a, cell_b)
+                    inline_position = {
+                        "Раздел": current_section,
+                        "Название раздела": current_section_title,
+                        "Подраздел": current_subsection,
+                        "Номер позиции": cell_a,
+                        "Код расценки": cell_b,
+                        "Наименование": cell_c,
+                        "Категория": category,
+                        "Единица измерения": row[unit_c],
+                        "Количество": row[qty_c],
+                        "Стоимость": inline_cost,
+                        "ФОТ": None,
+                        "ЭМ": None,
+                        "Материалы": inline_cost if category == "Материалы" else None,
+                        "НР": None,
+                        "СП": None,
+                        "ОТм": None,
+                        "Вспомогательные ресурсы": None,
+                        "Оборудование": inline_cost if category == "Оборудование" else None,
+                    }
+                    inline_material_total += inline_cost
+                    pending_inline_rows.append(inline_position)
+                    continue
+
                 if parsing_position:
-                    self.data = pd.concat([self.data, pd.DataFrame([position_data])])
+                    self.data = pd.concat([self.data, pd.DataFrame([position_data])], ignore_index=True)
+                    if pending_inline_rows:
+                        self.data = pd.concat([self.data, pd.DataFrame(pending_inline_rows)], ignore_index=True)
                 parsing_position = True
+                inline_material_total = 0.0
+                pending_inline_rows = []
 
                 category = self._get_category(cell_a, cell_b)
                 position_data = {
@@ -252,15 +297,20 @@ class Smeta:
 
             # --- «Всего по позиции» ---
             if parsing_position and cell_c == "Всего по позиции":
-                position_data["Стоимость"] = row[cost_c]
+                total_cost = row[cost_c] or 0
+                position_data["Стоимость"] = total_cost - inline_material_total
 
                 if position_data["Категория"] == "Материалы":
-                    position_data["Материалы"] = row[cost_c]
+                    position_data["Материалы"] = position_data["Стоимость"]
                 elif position_data["Категория"] == "Оборудование":
-                    position_data["Оборудование"] = row[cost_c]
+                    position_data["Оборудование"] = position_data["Стоимость"]
 
-                self.data = pd.concat([self.data, pd.DataFrame([position_data])])
+                self.data = pd.concat([self.data, pd.DataFrame([position_data])], ignore_index=True)
+                if pending_inline_rows:
+                    self.data = pd.concat([self.data, pd.DataFrame(pending_inline_rows)], ignore_index=True)
                 parsing_position = False
+                inline_material_total = 0.0
+                pending_inline_rows = []
                 continue
 
             # --- детали затрат ---

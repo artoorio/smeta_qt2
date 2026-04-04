@@ -12,6 +12,9 @@
   </header>
 
   <section class="card">
+    <p class="summary">
+      Если файлы не выбраны, для отладки автоматически используются <strong>проект.xlsx</strong> и <strong>факт.xlsx</strong> из папки проекта.
+    </p>
     <form id="compare-form">
       <label>
         Проект (первый файл)
@@ -21,7 +24,7 @@
         Факт (второй файл)
         <input type="file" name="fact" accept=".xlsx,.xls" />
       </label>
-      <div class="columns-grid">
+      <div class="columns-grid" hidden style="display: none;">
         <label>
           Колонка сравнения
           <input name="compareColumn" value="Наименование" readonly />
@@ -55,8 +58,23 @@
       <button type="button" class="sheet-tab" data-sheet-target="compare-unit-diff">Отличается ед. изм.</button>
       <button type="button" class="sheet-tab" data-sheet-target="compare-files">Файлы</button>
     </div>
+    <div class="inline-filter" id="customer-filter-bar" hidden>
+      <input
+        type="text"
+        id="customer-filter-input"
+        placeholder="Фильтр Customer: раздел, подраздел, код, наименование, ед.изм., числа"
+      />
+      <button type="button" class="ghost" id="customer-filter-clear">Сбросить</button>
+    </div>
     <div id="compare-detail" class="table-wrapper sheet-panel"></div>
+    <div class="inline-filter" id="summary-view-bar" hidden>
+      <button type="button" class="ghost active" id="summary-by-subsection">По подразделам</button>
+      <button type="button" class="ghost" id="summary-by-section">По разделам</button>
+    </div>
     <div id="compare-summary-table" class="table-wrapper sheet-panel" hidden></div>
+    <p id="compare-info-note" class="summary sheet-panel" hidden>
+      Здесь отображаются позиции, наиболее сильно повлиявшие на изменение итоговой стоимости.
+    </p>
     <div id="compare-info" class="table-wrapper sheet-panel" hidden></div>
     <div id="compare-unit-diff" class="table-wrapper sheet-panel" hidden></div>
     <div id="compare-files" class="table-wrapper sheet-panel" hidden></div>

@@ -306,7 +306,7 @@ class SmetaComparator:
 
         return pd.DataFrame(rows)
 
-    def generate_top_difference_report(self, limit: int = 10) -> pd.DataFrame:
+    def generate_top_difference_report(self, coverage: float = 0.8) -> pd.DataFrame:
         d1, d2 = self._align()
 
         qty1 = pd.to_numeric(d1.get("Количество", pd.Series([None] * len(d1))), errors="coerce")
@@ -333,9 +333,33 @@ class SmetaComparator:
             "Ст-ть (Факт)": cost2,
         })
         info["Разница (Ст-ть)"] = info["Ст-ть (Проект)"] - info["Ст-ть (Факт)"]
-        info["_abs_diff"] = info["Разница (Ст-ть)"].abs()
-        info = info[info["_abs_diff"] > 0].sort_values("_abs_diff", ascending=False).head(limit)
-        return info.drop(columns=["_abs_diff"]).reset_index(drop=True)
+        info = info[info["Разница (Ст-ть)"] != 0].copy()
+
+        def select_by_coverage(frame: pd.DataFrame, positive: bool) -> pd.DataFrame:
+            subset = frame[frame["Разница (Ст-ть)"] > 0].copy() if positive else frame[frame["Разница (Ст-ть)"] < 0].copy()
+            if subset.empty:
+                return subset
+            subset["_weight"] = subset["Разница (Ст-ть)"] if positive else subset["Разница (Ст-ть)"].abs()
+            subset = subset.sort_values("_weight", ascending=False)
+            total_weight = subset["_weight"].sum()
+            if total_weight <= 0:
+                return subset.iloc[:0]
+            subset["_cum_share"] = subset["_weight"].cumsum() / total_weight
+            selected = subset[subset["_cum_share"] <= coverage].copy()
+            min_rows = min(3, len(subset))
+            if len(selected) < min_rows:
+                selected = subset.head(min_rows).copy()
+            elif len(selected) < len(subset):
+                next_row = subset.iloc[[len(selected)]].copy()
+                selected = pd.concat([selected, next_row], ignore_index=True)
+            return selected.drop(columns=["_weight", "_cum_share"], errors="ignore")
+
+        positive_rows = select_by_coverage(info, positive=True)
+        negative_rows = select_by_coverage(info, positive=False)
+        result = pd.concat([positive_rows, negative_rows], ignore_index=True)
+        result["_abs_diff"] = result["Разница (Ст-ть)"].abs()
+        result = result.sort_values(["_abs_diff", "Разница (Ст-ть)"], ascending=[False, False])
+        return result.drop(columns=["_abs_diff"], errors="ignore").reset_index(drop=True)
 
     def generate_unit_difference_report(self) -> pd.DataFrame:
         d1, d2 = self._align()

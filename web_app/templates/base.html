@@ -11,6 +11,12 @@
     <main class="shell">
       {% block content %}{% endblock %}
     </main>
-    <script src="/static/app.js" defer></script>
+    {% block shared_scripts %}
+      <script src="/static/report-core.js" defer></script>
+      {% block app_script %}
+        <script src="/static/app.js" defer></script>
+      {% endblock %}
+    {% endblock %}
+    {% block page_scripts %}{% endblock %}
   </body>
 </html>

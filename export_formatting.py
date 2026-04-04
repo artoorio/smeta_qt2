@@ -58,7 +58,15 @@ def _wrapped_line_count(value: object, width_chars: int) -> int:
 
 def _looks_numeric_header(header: object) -> bool:
     text = str(header)
-    return any(token in text for token in ("Кол-во", "Количество", "Ст-ть", "Стоимость", "Разница", "Материалы"))
+    return any(
+        token in text
+        for token in ("Кол-во", "Количество", "Ст-ть", "Стоимость", "Разница", "Материалы", "ФОТ", "ЭМ", "НР", "СП", "ОТм")
+    )
+
+
+def _looks_quantity_header(header: object) -> bool:
+    text = str(header)
+    return any(token in text for token in ("Кол-во", "Количество"))
 
 
 def _looks_code_header(header: object) -> bool:
@@ -85,6 +93,18 @@ def _to_float_if_numeric(value: object):
 def _format_html_value(header: object, value: object) -> str:
     numeric_value = _to_float_if_numeric(value)
     if numeric_value is not None and _looks_numeric_header(header):
+        if _looks_quantity_header(header):
+            text = format(numeric_value, ".15g")
+            if "e" in text.lower():
+                text = f"{numeric_value}"
+            if "." in text:
+                integer_part, fractional_part = text.split(".", 1)
+                integer_text = f"{int(integer_part):,}".replace(",", " ")
+                fractional_part = fractional_part.rstrip("0")
+                text = f"{integer_text},{fractional_part}" if fractional_part else integer_text
+            else:
+                text = f"{int(numeric_value):,}".replace(",", " ")
+            return html.escape(text)
         if float(numeric_value).is_integer():
             text = f"{int(numeric_value):,}".replace(",", " ")
         else:
