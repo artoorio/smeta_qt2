@@ -297,8 +297,6 @@
     const onSortChange = typeof options.onSortChange === "function" ? options.onSortChange : null;
     const onSortReset = typeof options.onSortReset === "function" ? options.onSortReset : null;
     const onFocusKey = typeof options.onFocusKey === "function" ? options.onFocusKey : null;
-    const onRowSelect = typeof options.onRowSelect === "function" ? options.onRowSelect : null;
-    const selectedRowKey = String(options.selectedRowKey || "").trim();
     const rowTooltip = typeof options.rowTooltip === "function" ? options.rowTooltip : null;
     const resourceMode = options.resourceMode || "collapsed";
     const isSortableTable = mode === "default" && sortState;
@@ -431,23 +429,9 @@
       const tr = document.createElement("tr");
       const rowClass = detectRowClass(data.columns, row);
       if (rowClass) tr.className = rowClass;
-      const rowKey = String(row.__meta_row_key || row.__meta_focus_key || "").trim();
-      if (rowKey) {
-        tr.dataset.rowKey = rowKey;
-        if (selectedRowKey && rowKey === selectedRowKey) {
-          tr.classList.add("row-selected");
-        }
-      }
       const focusKey = String(row.__meta_focus_key || row.__meta_subsection_focus_key || row.__meta_section_focus_key || "").trim();
       if (focusKey) {
         tr.dataset.focusKey = focusKey;
-      }
-      if (onRowSelect) {
-        tr.classList.add("row-selectable");
-        tr.addEventListener("click", (event) => {
-          if (event.target.closest("button, a, input, textarea, select, label")) return;
-          onRowSelect(row, rowKey);
-        });
       }
       const tooltip = rowTooltip ? rowTooltip(row) : "";
       if (tooltip) {

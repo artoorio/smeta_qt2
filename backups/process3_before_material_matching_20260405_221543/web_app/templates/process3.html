@@ -44,7 +44,6 @@
     <div class="sheet-tabs" id="process3-sheet-tabs" hidden>
       <button type="button" class="sheet-tab" data-process3-sheet-target="process3-summary">Итоги</button>
       <button type="button" class="sheet-tab active" data-process3-sheet-target="process3-detail">Данные</button>
-      <button type="button" class="sheet-tab" data-process3-sheet-target="process3-materials">Материалы</button>
       <button type="button" class="sheet-tab" data-process3-sheet-target="process3-info">Инфо</button>
       <button type="button" class="sheet-tab" data-process3-sheet-target="process3-unit-diff">Отличается ед. изм.</button>
       <button type="button" class="sheet-tab" data-process3-sheet-target="process3-files">Файлы</button>
@@ -62,50 +61,6 @@
       <button type="button" class="ghost" id="process3-summary-by-subsection">По подразделам</button>
     </div>
     <div id="process3-detail" class="table-wrapper sheet-panel"></div>
-    <section id="process3-materials" class="card material-link-panel sheet-panel" hidden>
-      <div class="material-link-header">
-        <div>
-          <p class="eyebrow">Связь материалов</p>
-          <h2>Материалы сметы и материалы БД</h2>
-        </div>
-        <div class="material-link-header-actions">
-          <button type="button" class="ghost" id="process3-material-clear">Сбросить выбор</button>
-          <button type="button" class="ghost danger" id="process3-material-delete-links">Удалить связи по смете</button>
-        </div>
-      </div>
-      <div id="process3-material-summary" class="material-link-summary">
-        <div class="material-link-summary-card">
-          <span>Стоимость материалов по смете</span>
-          <strong id="process3-material-summary-plan">0 ₽</strong>
-        </div>
-        <div class="material-link-summary-card">
-          <span>Стоимость материалов по факту</span>
-          <strong id="process3-material-summary-fact">0 ₽</strong>
-        </div>
-      </div>
-      <div class="material-link-grid">
-        <div class="material-link-list">
-          <div class="material-link-list-head">
-            <h3>Материалы сметы</h3>
-            <label class="material-link-filter">
-              <span>Фильтр</span>
-              <input id="process3-material-filter" placeholder="По наименованию, коду, единице" />
-            </label>
-          </div>
-          <div id="process3-material-source-list" class="material-source-list"></div>
-        </div>
-        <div class="material-link-search">
-          <div class="material-link-selected-db">
-            <button type="button" class="primary" id="process3-material-bind" disabled>Связать выбранные материалы</button>
-          </div>
-          <div class="material-link-results">
-            <h3>Материалы БД</h3>
-            <div id="process3-material-results" class="material-results-list"></div>
-          </div>
-        </div>
-      </div>
-      <div id="process3-material-status" class="summary"></div>
-    </section>
     <div id="process3-summary" class="table-wrapper sheet-panel" hidden></div>
     <div id="process3-info" class="table-wrapper sheet-panel" hidden></div>
     <div id="process3-unit-diff" class="table-wrapper sheet-panel" hidden></div>

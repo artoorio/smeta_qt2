@@ -1,7 +1,4 @@
 import json
-import hashlib
-import re
-from difflib import SequenceMatcher
 import os
 import shutil
 import tempfile
@@ -21,17 +18,7 @@ from starlette.background import BackgroundTask
 from sqlalchemy import func
 
 from data_processing import CATEGORY_PREFIXES, process_smeta
-from db import (
-    FileRecord,
-    MaterialAlias,
-    MaterialBinding,
-    MaterialCatalog,
-    MaterialCodeLink,
-    MaterialUnitRule,
-    SmetaMaterialLink,
-    SessionLocal,
-    SmetaRow,
-)
+from db import FileRecord, SessionLocal, SmetaRow
 from fact_export import export_with_fact_formula
 from export_formatting import apply_readable_sheet_layout, dataframe_to_readable_html, dataframes_to_readable_html
 from pydantic import BaseModel, Field
@@ -345,21 +332,6 @@ def _build_process2_customer_frame(detail_df: pd.DataFrame) -> pd.DataFrame:
         position_row["__meta_focus_key"] = ""
         position_row["__meta_section_label"] = format_section_label(section, section_title)
         position_row["__meta_subsection_label"] = subsection
-        position_row["__meta_row_key"] = hashlib.sha1(
-            json.dumps(
-                {
-                    "section": section_uid,
-                    "subsection": subsection_uid,
-                    "name": str(position_row.get("Наименование", "")).strip(),
-                    "unit": str(position_row.get("Ед.изм.", position_row.get("Единица измерения", "")) or "").strip(),
-                    "code": str(position_row.get("Код расценки", "")).strip(),
-                    "quantity": str(position_row.get("Количество", "")).strip(),
-                    "cost": str(position_row.get("Стоимость", "")).strip(),
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            ).encode("utf-8")
-        ).hexdigest()
         rows.append(position_row)
 
     customer = pd.DataFrame(
@@ -761,33 +733,36 @@ def materials_page(request: Request) -> HTMLResponse:
 def materials_api() -> Dict[str, Any]:
     session = SessionLocal()
     try:
-        _purge_legacy_material_rows(session)
-        _migrate_legacy_materials_if_needed(session)
         rows = (
-            session.query(MaterialCatalog.id, MaterialCatalog.source_name, MaterialCatalog.date_added, MaterialCatalog.name,
-                          MaterialCatalog.unit, MaterialCatalog.cost, MaterialCatalog.supplier, MaterialCatalog.region)
-            .order_by(MaterialCatalog.source_name, MaterialCatalog.name, MaterialCatalog.id)
+            session.query(SmetaRow.id, SmetaRow.row_data, FileRecord.orig_name)
+            .join(FileRecord, FileRecord.id == SmetaRow.file_id)
+            .order_by(FileRecord.orig_name)
             .all()
         )
-        code_rows = session.query(MaterialCodeLink.material_id, MaterialCodeLink.code).all()
-        codes_by_material: Dict[int, List[str]] = {}
-        for material_id, code in code_rows:
-            codes_by_material.setdefault(int(material_id), []).append(str(code))
         result = []
         total_materials = 0.0
-        for row_id, source_name, date_added, name, unit, cost, supplier, region in rows:
-            numeric_material_cost = pd.to_numeric(pd.Series([cost]), errors="coerce").fillna(0).iloc[0]
+        for row_id, raw, file_name in rows:
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            material_cost = payload.get("Стоимость")
+            if material_cost is None:
+                material_cost = payload.get("Материалы")
+            if material_cost is None:
+                continue
+            numeric_material_cost = pd.to_numeric(pd.Series([material_cost]), errors="coerce").fillna(0).iloc[0]
             total_materials += float(numeric_material_cost)
             result.append({
                 "id": row_id,
-                "file": source_name,
-                "date_added": date_added.strftime("%d.%m.%Y %H:%M") if date_added else "",
-                "name": name,
-                "unit": unit,
-                "cost": float(numeric_material_cost),
-                "supplier": supplier,
-                "region": region,
-                "price_codes": ", ".join(codes_by_material.get(int(row_id), [])),
+                "file": file_name,
+                "date_added": payload.get("Дата добавления", payload.get("date_added", "")),
+                "name": payload.get("Наименование", ""),
+                "unit": payload.get("Единица измерения", ""),
+                "cost": payload.get("Стоимость", material_cost),
+                "supplier": payload.get("Наименование поставщика", ""),
+                "region": payload.get("Регион поставки", ""),
+                "price_codes": payload.get("Коды расценок", payload.get("Код расценки", "")),
             })
         columns = ["id", "file", "date_added", "name", "unit", "cost", "supplier", "region", "price_codes"]
         return {
@@ -806,12 +781,11 @@ def materials_api() -> Dict[str, Any]:
 def materials_files_api() -> Dict[str, Any]:
     session = SessionLocal()
     try:
-        _purge_legacy_material_rows(session)
-        _migrate_legacy_materials_if_needed(session)
         rows = (
-            session.query(MaterialCatalog.source_name, func.count(MaterialCatalog.id))
-            .group_by(MaterialCatalog.source_name)
-            .order_by(MaterialCatalog.source_name)
+            session.query(FileRecord.orig_name, func.count(SmetaRow.id))
+            .join(SmetaRow, SmetaRow.file_id == FileRecord.id)
+            .group_by(FileRecord.orig_name)
+            .order_by(FileRecord.orig_name)
             .all()
         )
         return {
@@ -828,9 +802,7 @@ def materials_files_api() -> Dict[str, Any]:
 def materials_all_files_api() -> Dict[str, Any]:
     session = SessionLocal()
     try:
-        _purge_legacy_material_rows(session)
-        _migrate_legacy_materials_if_needed(session)
-        rows = session.query(MaterialCatalog.source_name).order_by(MaterialCatalog.source_name).distinct().all()
+        rows = session.query(FileRecord.orig_name).order_by(FileRecord.orig_name).all()
         return {
             "rows": [
                 {
@@ -845,318 +817,6 @@ def materials_all_files_api() -> Dict[str, Any]:
         session.close()
 
 
-@app.get("/api/materials/catalog")
-def materials_catalog_api() -> Dict[str, Any]:
-    session = SessionLocal()
-    try:
-        _purge_legacy_material_rows(session)
-        _migrate_legacy_materials_if_needed(session)
-        catalog = _fetch_material_catalog(session)
-        return {
-            "rows": catalog,
-            "count": len(catalog),
-        }
-    finally:
-        session.close()
-
-
-class MaterialPayload(BaseModel):
-    name: str = Field(..., min_length=1)
-    unit: str = Field(..., min_length=1)
-    cost: float = Field(..., ge=0)
-    supplier: str = ""
-    region: str = ""
-    price_codes: str = ""
-    file_name: str = "web"
-
-
-class MaterialCleanupPayload(BaseModel):
-    file_names: List[str] = Field(default_factory=list)
-
-
-class MaterialDeletePayload(BaseModel):
-    id: int = Field(..., ge=1)
-
-
-class MaterialSearchPayload(BaseModel):
-    query: str = ""
-    name: str = ""
-    unit: str = ""
-    code: str = ""
-    supplier: str = ""
-    region: str = ""
-    cost: Optional[float] = None
-    limit: int = Field(10, ge=1, le=50)
-
-
-class MaterialBindPayload(BaseModel):
-    material_id: int = Field(..., ge=1)
-    smeta_file_name: str = ""
-    smeta_position_number: str = ""
-    smeta_name: str = Field(..., min_length=1)
-    smeta_unit: str = ""
-    smeta_code: str = ""
-    smeta_cost: float = 0.0
-    smeta_signature: str = ""
-    coefficient: float = Field(1.0, gt=0)
-    match_score: float = Field(0.0, ge=0)
-    source_name: str = ""
-    status: str = "confirmed"
-    note: str = ""
-
-
-class MaterialLinkDeletePayload(BaseModel):
-    smeta_file_name: str = Field(..., min_length=1)
-
-
-@app.post("/api/materials/search")
-def materials_search_api(payload: MaterialSearchPayload) -> Dict[str, Any]:
-    session = SessionLocal()
-    try:
-        _purge_legacy_material_rows(session)
-        _migrate_legacy_materials_if_needed(session)
-        catalog = _fetch_material_catalog(session)
-        scored_catalog = [_score_material_candidate(candidate, payload) for candidate in catalog]
-        scored_catalog.sort(key=lambda item: (-float(item.get("match_score", 0.0)), str(item.get("name", ""))))
-        return {
-            "query": {
-                "name": payload.name,
-                "query": payload.query,
-                "unit": payload.unit,
-                "code": payload.code,
-                "supplier": payload.supplier,
-                "region": payload.region,
-                "cost": payload.cost,
-            },
-            "rows": scored_catalog[: payload.limit],
-            "count": min(len(scored_catalog), payload.limit),
-            "total_count": len(scored_catalog),
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Ошибка поиска материалов: {exc}")
-    finally:
-        session.close()
-
-
-@app.get("/api/materials/bindings")
-def materials_bindings_api(material_id: Optional[int] = None) -> Dict[str, Any]:
-    session = SessionLocal()
-    try:
-        query = (
-            session.query(MaterialBinding, MaterialCatalog)
-            .join(MaterialCatalog, MaterialCatalog.id == MaterialBinding.material_id)
-            .order_by(MaterialBinding.updated_at.desc(), MaterialBinding.id.desc())
-        )
-        if material_id:
-            query = query.filter(MaterialBinding.material_id == material_id)
-        rows = query.all()
-        result = []
-        for binding, material in rows:
-            result.append({
-                "id": binding.id,
-                "material_id": binding.material_id,
-                "material_name": material.name,
-                "material_unit": material.unit,
-                "material_cost": float(material.cost or 0),
-                "material_supplier": material.supplier or "",
-                "material_region": material.region or "",
-                "smeta_name": binding.smeta_name,
-                "smeta_unit": binding.smeta_unit,
-                "smeta_code": binding.smeta_code,
-                "smeta_signature": binding.smeta_signature,
-                "coefficient": float(binding.coefficient or 1.0),
-                "match_score": float(binding.match_score or 0.0),
-                "source_name": binding.source_name or "",
-                "status": binding.status or "confirmed",
-                "note": binding.note or "",
-                "created_at": binding.created_at.strftime("%d.%m.%Y %H:%M") if binding.created_at else "",
-                "updated_at": binding.updated_at.strftime("%d.%m.%Y %H:%M") if binding.updated_at else "",
-            })
-        return {"rows": result, "count": len(result)}
-    finally:
-        session.close()
-
-
-@app.post("/api/materials/bind")
-def materials_bind_api(payload: MaterialBindPayload) -> Dict[str, Any]:
-    session = SessionLocal()
-    try:
-        _purge_legacy_material_rows(session)
-        _migrate_legacy_materials_if_needed(session)
-        material = session.query(MaterialCatalog).filter(MaterialCatalog.id == payload.material_id).first()
-        if not material:
-            raise HTTPException(status_code=404, detail="Материал БД не найден.")
-        smeta_file_name = str(payload.smeta_file_name or "").strip()
-        if not smeta_file_name:
-            smeta_file_name = str(payload.source_name or "").strip()
-            if smeta_file_name.startswith("process3:"):
-                smeta_file_name = smeta_file_name.split(":", 1)[1].strip()
-        binding = MaterialBinding(
-            material_id=material.id,
-            smeta_file_name=smeta_file_name or "web",
-            smeta_name=payload.smeta_name.strip(),
-            smeta_unit=payload.smeta_unit.strip(),
-            smeta_code=payload.smeta_code.strip(),
-            smeta_signature=payload.smeta_signature.strip() or _material_signature(payload.smeta_name, payload.smeta_unit, payload.smeta_code, material.supplier, material.region),
-            coefficient=float(payload.coefficient or 1.0),
-            match_score=float(payload.match_score or 0.0),
-            source_name=payload.source_name.strip(),
-            status=payload.status.strip() or "confirmed",
-            note=payload.note.strip(),
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
-        )
-        session.query(MaterialBinding).filter(
-            MaterialBinding.smeta_signature == binding.smeta_signature
-        ).delete(synchronize_session=False)
-        session.add(binding)
-        alias_text = payload.smeta_name.strip()
-        if alias_text:
-            alias_norm = _normalize_name_for_match(alias_text)
-            existing_alias = (
-                session.query(MaterialAlias)
-                .filter(
-                    MaterialAlias.material_id == material.id,
-                    MaterialAlias.alias_type == "smeta_name",
-                )
-                .all()
-            )
-            matched_alias = next(
-                (item for item in existing_alias if _normalize_name_for_match(item.alias) == alias_norm),
-                None,
-            )
-            if matched_alias:
-                matched_alias.confidence = max(float(matched_alias.confidence or 0.0), float(payload.match_score or 0.0))
-            else:
-                session.add(MaterialAlias(
-                    material_id=material.id,
-                    alias=alias_text,
-                    alias_type="smeta_name",
-                    confidence=float(payload.match_score or 0.0),
-                ))
-        source_unit = payload.smeta_unit.strip()
-        target_unit = material.unit.strip()
-        if source_unit and target_unit and _normalize_name_for_match(source_unit) != _normalize_name_for_match(target_unit):
-            existing_rule = (
-                session.query(MaterialUnitRule)
-                .filter(
-                    MaterialUnitRule.material_id == material.id,
-                    MaterialUnitRule.source_unit == source_unit,
-                    MaterialUnitRule.target_unit == target_unit,
-                )
-                .first()
-            )
-            if existing_rule:
-                existing_rule.coefficient = float(payload.coefficient or 1.0)
-                existing_rule.active = True
-                existing_rule.updated_at = datetime.utcnow()
-                existing_rule.note = payload.note.strip()
-            else:
-                session.add(MaterialUnitRule(
-                    material_id=material.id,
-                    source_unit=source_unit,
-                    target_unit=target_unit,
-                    coefficient=float(payload.coefficient or 1.0),
-                    active=True,
-                    note=payload.note.strip(),
-                    created_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow(),
-                ))
-        session.query(SmetaMaterialLink).filter(
-            SmetaMaterialLink.smeta_file_name == (smeta_file_name or "web"),
-            SmetaMaterialLink.smeta_position_number == str(payload.smeta_position_number or "").strip(),
-            SmetaMaterialLink.smeta_name == payload.smeta_name.strip(),
-            SmetaMaterialLink.smeta_code == payload.smeta_code.strip(),
-        ).delete(synchronize_session=False)
-        session.add(SmetaMaterialLink(
-            smeta_file_name=smeta_file_name or "web",
-            smeta_position_number=str(payload.smeta_position_number or "").strip(),
-            smeta_name=payload.smeta_name.strip(),
-            smeta_code=payload.smeta_code.strip(),
-            smeta_cost=float(payload.smeta_cost or 0.0),
-            material_id=material.id,
-            created_at=datetime.utcnow(),
-        ))
-        session.commit()
-        return {
-            "saved": True,
-            "binding_id": binding.id,
-            "material_id": material.id,
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Ошибка сохранения связи: {exc}")
-    finally:
-        session.close()
-
-
-@app.get("/api/materials/links")
-def materials_links_api() -> Dict[str, Any]:
-    session = SessionLocal()
-    try:
-        rows = (
-            session.query(SmetaMaterialLink, MaterialCatalog)
-            .join(MaterialCatalog, MaterialCatalog.id == SmetaMaterialLink.material_id)
-            .order_by(SmetaMaterialLink.created_at.desc(), SmetaMaterialLink.id.desc())
-            .all()
-        )
-        result = []
-        for link, material in rows:
-            result.append({
-                "id": link.id,
-                "smeta_file_name": link.smeta_file_name,
-                "smeta_position_number": link.smeta_position_number,
-                "smeta_name": link.smeta_name,
-                "smeta_code": link.smeta_code,
-                "smeta_cost": float(link.smeta_cost or 0),
-                "material_id": link.material_id,
-                "material_name": material.name,
-                "created_at": link.created_at.strftime("%d.%m.%Y %H:%M") if link.created_at else "",
-            })
-        return {"rows": result, "count": len(result)}
-    finally:
-        session.close()
-
-
-@app.post("/api/materials/links/delete")
-def materials_links_delete_api(payload: MaterialLinkDeletePayload) -> Dict[str, Any]:
-    session = SessionLocal()
-    try:
-        file_name = payload.smeta_file_name.strip()
-        links = session.query(SmetaMaterialLink).filter(SmetaMaterialLink.smeta_file_name == file_name).all()
-        signatures = [
-            [str(link.smeta_file_name or "").strip(), str(link.smeta_position_number or "").strip(), str(link.smeta_name or "").strip(), str(link.smeta_code or "").strip()]
-            for link in links
-        ]
-        signatures = ["||".join(parts).lower() for parts in signatures if any(part for part in parts)]
-        deleted_bindings = 0
-        if file_name:
-            deleted_bindings += (
-                session.query(MaterialBinding)
-                .filter(MaterialBinding.smeta_file_name == file_name)
-                .delete(synchronize_session=False)
-            )
-        if signatures:
-            deleted_bindings += (
-                session.query(MaterialBinding)
-                .filter(MaterialBinding.smeta_signature.in_(signatures))
-                .delete(synchronize_session=False)
-            )
-        deleted_rows = (
-            session.query(SmetaMaterialLink)
-            .filter(SmetaMaterialLink.smeta_file_name == file_name)
-            .delete(synchronize_session=False)
-        )
-        session.commit()
-        return {"deleted_rows": deleted_rows, "deleted_bindings": deleted_bindings, "smeta_file_name": file_name}
-    finally:
-        session.close()
-
-
-@app.post("/api/materials/rules")
-def materials_rule_api(payload: MaterialBindPayload) -> Dict[str, Any]:
-    return materials_bind_api(payload)
-
-
 MATERIAL_IMPORT_ALIASES: Dict[str, List[str]] = {
     "file_name": ["file_name", "Файл", "Имя файла", "Название файла"],
     "Наименование": ["Наименование", "Наименование товара", "Материал", "name", "Описание"],
@@ -1168,19 +828,7 @@ MATERIAL_IMPORT_ALIASES: Dict[str, List[str]] = {
 }
 
 
-def _split_material_codes(value: Any) -> List[str]:
-    if pd.isna(value):
-        return []
-    text = str(value).replace("\n", ",").replace(";", ",")
-    parts = [part.strip() for part in text.split(",") if part.strip()]
-    unique: List[str] = []
-    for part in parts:
-        if part not in unique:
-            unique.append(part)
-    return unique
-
-
-def _normalize_material_import_frame(frame: pd.DataFrame, file_name: str) -> pd.DataFrame:
+def _normalize_material_import_frame(frame: pd.DataFrame, file_name: str, default_category: str) -> pd.DataFrame:
     df = frame.copy()
     df.columns = [str(col).strip() for col in df.columns]
     rename: Dict[str, str] = {}
@@ -1207,7 +855,15 @@ def _normalize_material_import_frame(frame: pd.DataFrame, file_name: str) -> pd.
     df["Наименование поставщика"] = df["Наименование поставщика"].fillna("").astype(str).str.strip()
     df["Регион поставки"] = df["Регион поставки"].fillna("").astype(str).str.strip()
     df["Дата добавления"] = df["Дата добавления"].fillna(datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")).astype(str).str.strip()
-    df["Коды расценок"] = df["Коды расценок"].apply(lambda value: ", ".join(_split_material_codes(value)))
+
+    def _join_codes(value: Any) -> str:
+        if pd.isna(value):
+            return ""
+        text = str(value).replace("\n", ",").replace(";", ",")
+        parts = [part.strip() for part in text.split(",") if part.strip()]
+        return ", ".join(parts)
+
+    df["Коды расценок"] = df["Коды расценок"].apply(_join_codes)
 
     df = df[df["Наименование"].astype(str).str.strip() != ""]
     df = df[df["Единица измерения"].astype(str).str.strip() != ""]
@@ -1215,26 +871,25 @@ def _normalize_material_import_frame(frame: pd.DataFrame, file_name: str) -> pd.
     return df
 
 
-def _store_material_catalog_rows(frame: pd.DataFrame, file_name: str) -> int:
+def _store_material_rows(frame: pd.DataFrame, file_name: str) -> int:
     if frame.empty:
         return 0
     session = SessionLocal()
     try:
+        file = session.query(FileRecord).filter_by(orig_name=file_name).first()
+        if not file:
+            file = FileRecord.from_path(file_name, status="manual")
+            session.add(file)
+            session.flush()
+
         inserted = 0
         for _, row in frame.iterrows():
-            catalog = MaterialCatalog(
-                name=str(row.get("Наименование", "")).strip(),
-                unit=str(row.get("Единица измерения", "")).strip(),
-                cost=float(pd.to_numeric(pd.Series([row.get("Стоимость")]), errors="coerce").fillna(0).iloc[0]),
-                supplier=str(row.get("Наименование поставщика", "")).strip(),
-                region=str(row.get("Регион поставки", "")).strip(),
-                source_name=str(row.get("file_name", file_name) or file_name).strip() or "web",
-                date_added=datetime.utcnow(),
-            )
-            session.add(catalog)
-            session.flush()
-            for code in _split_material_codes(row.get("Коды расценок", "")):
-                session.add(MaterialCodeLink(material_id=catalog.id, code=code))
+            data = row.drop(labels=["file_name"], errors="ignore").to_dict()
+            data.setdefault("Дата добавления", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
+            data.setdefault("Категория", "Материалы")
+            data.setdefault("Материалы", data.get("Стоимость") or 0)
+            entry = SmetaRow(file_id=file.id, row_data=json.dumps(data, ensure_ascii=False))
+            session.add(entry)
             inserted += 1
         session.commit()
         return inserted
@@ -1254,23 +909,22 @@ def _read_material_import_file(path: str) -> pd.DataFrame:
     raise HTTPException(status_code=400, detail="Поддерживаются только Excel или CSV-файлы.")
 
 
-def _parse_material_datetime(value: Any) -> datetime:
-    if isinstance(value, datetime):
-        return value
-    text = str(value or "").strip()
-    if not text:
-        return datetime.utcnow()
-    for parser in (
-        lambda v: datetime.fromisoformat(v),
-        lambda v: datetime.strptime(v, "%Y-%m-%d %H:%M:%S"),
-        lambda v: datetime.strptime(v, "%d.%m.%Y %H:%M"),
-        lambda v: datetime.strptime(v, "%d.%m.%Y %H:%M:%S"),
-    ):
-        try:
-            return parser(text)
-        except Exception:
-            continue
-    return datetime.utcnow()
+class MaterialPayload(BaseModel):
+    name: str = Field(..., min_length=1)
+    unit: str = Field(..., min_length=1)
+    cost: float = Field(..., ge=0)
+    supplier: str = ""
+    region: str = ""
+    price_codes: str = ""
+    file_name: str = "web"
+
+
+class MaterialCleanupPayload(BaseModel):
+    file_names: List[str] = Field(default_factory=list)
+
+
+class MaterialDeletePayload(BaseModel):
+    id: int = Field(..., ge=1)
 
 
 def _normalize_name_for_match(value: str) -> str:
@@ -1279,239 +933,6 @@ def _normalize_name_for_match(value: str) -> str:
 
 def _compact_name_for_match(value: str) -> str:
     return "".join(ch for ch in _normalize_name_for_match(value) if ch.isalnum())
-
-
-def _material_signature(name: str, unit: str, code: str = "", supplier: str = "", region: str = "") -> str:
-    raw = "|".join([
-        _normalize_name_for_match(name),
-        _normalize_name_for_match(unit),
-        _normalize_name_for_match(code),
-        _normalize_name_for_match(supplier),
-        _normalize_name_for_match(region),
-    ])
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
-
-
-def _normalize_token_set(value: str) -> set[str]:
-    normalized = _normalize_name_for_match(value)
-    tokens = re.findall(r"[0-9a-zа-яё]+", normalized, flags=re.IGNORECASE)
-    return {token for token in tokens if token}
-
-
-def _material_text_score(source: str, target: str) -> float:
-    source_norm = _compact_name_for_match(source)
-    target_norm = _compact_name_for_match(target)
-    if not source_norm or not target_norm:
-        return 0.0
-    seq = SequenceMatcher(None, source_norm, target_norm).ratio()
-    source_tokens = _normalize_token_set(source)
-    target_tokens = _normalize_token_set(target)
-    if source_tokens and target_tokens:
-        token_overlap = len(source_tokens & target_tokens) / max(len(source_tokens | target_tokens), 1)
-    else:
-        token_overlap = 0.0
-    containment = 1.0 if source_norm in target_norm or target_norm in source_norm else 0.0
-    return (seq * 0.6) + (token_overlap * 0.3) + (containment * 0.1)
-
-
-def _material_code_match_score(code_value: str, codes: List[str]) -> float:
-    code_norm = _compact_name_for_match(code_value)
-    if not code_norm:
-        return 0.0
-    best = 0.0
-    for candidate in codes:
-        candidate_norm = _compact_name_for_match(candidate)
-        if not candidate_norm:
-            continue
-        if code_norm == candidate_norm:
-            return 1.0
-        if code_norm in candidate_norm or candidate_norm in code_norm:
-            best = max(best, 0.85)
-        else:
-            best = max(best, SequenceMatcher(None, code_norm, candidate_norm).ratio())
-    return best
-
-
-def _material_cost_score(source_cost: Optional[float], target_cost: Optional[float]) -> float:
-    if source_cost is None or target_cost is None:
-        return 0.0
-    try:
-        source_num = float(source_cost)
-        target_num = float(target_cost)
-    except (TypeError, ValueError):
-        return 0.0
-    if source_num <= 0 or target_num <= 0:
-        return 0.0
-    diff_ratio = abs(source_num - target_num) / max(source_num, target_num)
-    return max(0.0, 1.0 - diff_ratio)
-
-
-def _fetch_material_catalog(session) -> List[Dict[str, Any]]:
-    rows = session.query(MaterialCatalog).order_by(MaterialCatalog.name, MaterialCatalog.id).all()
-    codes = session.query(MaterialCodeLink).all()
-    alias_rows = session.query(MaterialAlias).all()
-    rules = session.query(MaterialUnitRule).all()
-    codes_by_material: Dict[int, List[str]] = {}
-    for link in codes:
-        codes_by_material.setdefault(int(link.material_id), []).append(str(link.code))
-    aliases_by_material: Dict[int, List[str]] = {}
-    for alias in alias_rows:
-        aliases_by_material.setdefault(int(alias.material_id), []).append(str(alias.alias))
-    rules_by_material: Dict[int, List[Dict[str, Any]]] = {}
-    for rule in rules:
-        rules_by_material.setdefault(int(rule.material_id), []).append({
-            "source_unit": rule.source_unit,
-            "target_unit": rule.target_unit,
-            "coefficient": float(rule.coefficient),
-            "active": bool(rule.active),
-            "note": rule.note or "",
-        })
-    catalog: List[Dict[str, Any]] = []
-    for row in rows:
-        catalog.append({
-            "id": row.id,
-            "name": row.name,
-            "unit": row.unit,
-            "cost": float(row.cost or 0),
-            "supplier": row.supplier or "",
-            "region": row.region or "",
-            "source_name": row.source_name or "",
-            "date_added": row.date_added.strftime("%d.%m.%Y %H:%M") if row.date_added else "",
-            "codes": codes_by_material.get(int(row.id), []),
-            "aliases": aliases_by_material.get(int(row.id), []),
-            "rules": rules_by_material.get(int(row.id), []),
-        })
-    return catalog
-
-
-def _score_material_candidate(candidate: Dict[str, Any], payload: MaterialSearchPayload) -> Dict[str, Any]:
-    query_name = payload.name.strip() or payload.query.strip()
-    score = 0.0
-    reasons: List[str] = []
-
-    name_score = _material_text_score(query_name, candidate.get("name", ""))
-    alias_score = max(
-        (_material_text_score(query_name, alias) for alias in candidate.get("aliases", [])),
-        default=0.0,
-    )
-    if alias_score > name_score:
-        name_score = alias_score
-        reasons.append("alias")
-    score += name_score * 65
-    if name_score >= 0.85:
-        reasons.append("name-match")
-
-    code_score = _material_code_match_score(payload.code, candidate.get("codes", []))
-    if code_score:
-        score += code_score * 25
-        reasons.append("code")
-
-    if payload.unit:
-        if _normalize_name_for_match(payload.unit) == _normalize_name_for_match(candidate.get("unit", "")):
-            score += 10
-            reasons.append("unit")
-        else:
-            for rule in candidate.get("rules", []):
-                if _normalize_name_for_match(rule.get("source_unit", "")) == _normalize_name_for_match(payload.unit) and bool(rule.get("active", True)):
-                    score += 8
-                    reasons.append("unit-rule")
-                    break
-
-    if payload.supplier and _normalize_name_for_match(payload.supplier) == _normalize_name_for_match(candidate.get("supplier", "")):
-        score += 5
-        reasons.append("supplier")
-    if payload.region and _normalize_name_for_match(payload.region) == _normalize_name_for_match(candidate.get("region", "")):
-        score += 4
-        reasons.append("region")
-
-    cost_score = _material_cost_score(payload.cost, candidate.get("cost"))
-    if cost_score:
-        score += cost_score * 10
-        reasons.append("cost")
-
-    if candidate.get("source_name"):
-        score += 0.1
-
-    return {
-        **candidate,
-        "match_score": round(score, 2),
-        "reasons": reasons,
-        "query_signature": _material_signature(query_name, payload.unit, payload.code, payload.supplier, payload.region),
-    }
-
-
-def _migrate_legacy_materials_if_needed(session) -> int:
-    if session.query(MaterialCatalog.id).first():
-        return 0
-    legacy_rows = (
-        session.query(SmetaRow.id, SmetaRow.row_data, FileRecord.orig_name)
-        .join(FileRecord, FileRecord.id == SmetaRow.file_id)
-        .order_by(FileRecord.orig_name, SmetaRow.id)
-        .all()
-    )
-    inserted = 0
-    for _, raw, file_name in legacy_rows:
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        category = str(payload.get("Категория", "")).strip().lower()
-        if category and category != "материалы":
-            continue
-        name = str(payload.get("Наименование", "")).strip()
-        unit = str(payload.get("Единица измерения", "")).strip()
-        if not name or not unit:
-            continue
-        cost_value = payload.get("Стоимость", payload.get("Материалы", 0))
-        numeric_cost = pd.to_numeric(pd.Series([cost_value]), errors="coerce").fillna(0).iloc[0]
-        if not float(numeric_cost):
-            continue
-        material = MaterialCatalog(
-            name=name,
-            unit=unit,
-            cost=float(numeric_cost),
-            supplier=str(payload.get("Наименование поставщика", "")).strip(),
-            region=str(payload.get("Регион поставки", "")).strip(),
-            source_name=str(payload.get("file_name", file_name) or file_name).strip() or "web",
-            date_added=_parse_material_datetime(payload.get("Дата добавления", payload.get("date_added", ""))),
-        )
-        session.add(material)
-        session.flush()
-        for code in _split_material_codes(payload.get("Коды расценок", payload.get("Код расценки", ""))):
-            session.add(MaterialCodeLink(material_id=material.id, code=code))
-        inserted += 1
-    if inserted:
-        session.commit()
-    return inserted
-
-
-def _purge_legacy_material_rows(session) -> int:
-    legacy_rows = (
-        session.query(SmetaRow.id, SmetaRow.file_id, SmetaRow.row_data)
-        .join(FileRecord, FileRecord.id == SmetaRow.file_id)
-        .order_by(FileRecord.orig_name, SmetaRow.id)
-        .all()
-    )
-    material_row_ids: List[int] = []
-    material_file_ids: set[int] = set()
-    for row_id, file_id, raw in legacy_rows:
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        category = str(payload.get("Категория", "")).strip().lower()
-        if category == "материалы":
-            material_row_ids.append(int(row_id))
-            material_file_ids.add(int(file_id))
-    if not material_row_ids:
-        return 0
-    session.query(SmetaRow).filter(SmetaRow.id.in_(material_row_ids)).delete(synchronize_session=False)
-    for file_id in material_file_ids:
-        still_used = session.query(SmetaRow.id).filter(SmetaRow.file_id == file_id).first()
-        if not still_used:
-            session.query(FileRecord).filter(FileRecord.id == file_id).delete(synchronize_session=False)
-    session.commit()
-    return len(material_row_ids)
 
 
 @app.post("/api/materials/add")
@@ -1523,10 +944,11 @@ def add_material(payload: MaterialPayload) -> Dict[str, Any]:
         "Наименование поставщика": payload.supplier,
         "Регион поставки": payload.region,
         "Коды расценок": payload.price_codes,
+        "Дата добавления": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "Категория": "Материалы",
         "file_name": payload.file_name,
     }])
-    normalized = _normalize_material_import_frame(row, payload.file_name or "web")
-    inserted = _store_material_catalog_rows(normalized, payload.file_name or "web")
+    inserted = _store_material_rows(row, payload.file_name)
     return {"inserted": inserted, "cost": payload.cost, "file_name": payload.file_name}
 
 
@@ -1534,18 +956,15 @@ def add_material(payload: MaterialPayload) -> Dict[str, Any]:
 def delete_material(payload: MaterialDeletePayload) -> Dict[str, Any]:
     session = SessionLocal()
     try:
-        row = session.query(MaterialCatalog).filter(MaterialCatalog.id == payload.id).first()
+        row = session.query(SmetaRow).filter(SmetaRow.id == payload.id).first()
         if not row:
             raise HTTPException(status_code=404, detail="Материал не найден.")
-        session.query(MaterialCodeLink).filter(MaterialCodeLink.material_id == row.id).delete(synchronize_session=False)
-        session.query(MaterialAlias).filter(MaterialAlias.material_id == row.id).delete(synchronize_session=False)
-        session.query(MaterialUnitRule).filter(MaterialUnitRule.material_id == row.id).delete(synchronize_session=False)
-        session.query(MaterialBinding).filter(MaterialBinding.material_id == row.id).delete(synchronize_session=False)
+        file = session.query(FileRecord).filter(FileRecord.id == row.file_id).first()
         session.delete(row)
         session.commit()
         return {
             "deleted": True,
-            "file": row.source_name,
+            "file": file.orig_name if file else "",
         }
     finally:
         session.close()
@@ -1566,32 +985,27 @@ def cleanup_materials(payload: MaterialCleanupPayload) -> Dict[str, Any]:
         target_variants.add(_compact_name_for_match(Path(name).stem))
     session = SessionLocal()
     try:
-        materials = session.query(MaterialCatalog).all()
-        materials = [
-            material for material in materials
+        files = session.query(FileRecord).all()
+        files = [
+            file for file in files
             if any(
-                variant in _normalize_name_for_match(material.source_name)
-                or _normalize_name_for_match(material.source_name) in variant
-                or variant in _compact_name_for_match(material.source_name)
-                or _compact_name_for_match(material.source_name) in variant
-                for variant in target_variants
-            )
+                variant in _normalize_name_for_match(file.orig_name)
+                or _normalize_name_for_match(file.orig_name) in variant
+                or variant in _compact_name_for_match(file.orig_name)
+                or _compact_name_for_match(file.orig_name) in variant
+                   for variant in target_variants)
         ]
-        material_ids = [material.id for material in materials]
-        if not material_ids:
+        file_ids = [file.id for file in files]
+        if not file_ids:
             return {"deleted_files": 0, "deleted_rows": 0, "files": []}
 
-        session.query(MaterialCodeLink).filter(MaterialCodeLink.material_id.in_(material_ids)).delete(synchronize_session=False)
-        session.query(MaterialAlias).filter(MaterialAlias.material_id.in_(material_ids)).delete(synchronize_session=False)
-        session.query(MaterialUnitRule).filter(MaterialUnitRule.material_id.in_(material_ids)).delete(synchronize_session=False)
-        session.query(MaterialBinding).filter(MaterialBinding.material_id.in_(material_ids)).delete(synchronize_session=False)
-        deleted_rows = session.query(MaterialCatalog).filter(MaterialCatalog.id.in_(material_ids)).delete(synchronize_session=False)
-        deleted_files = deleted_rows
+        deleted_rows = session.query(SmetaRow).filter(SmetaRow.file_id.in_(file_ids)).delete(synchronize_session=False)
+        deleted_files = session.query(FileRecord).filter(FileRecord.id.in_(file_ids)).delete(synchronize_session=False)
         session.commit()
         return {
             "deleted_files": deleted_files,
             "deleted_rows": deleted_rows,
-            "files": [material.source_name for material in materials],
+            "files": [file.orig_name for file in files],
         }
     finally:
         session.close()
@@ -1609,8 +1023,8 @@ async def import_materials_file(
             raw = _read_material_import_file(path)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Не удалось прочитать файл: {exc}")
-    normalized = _normalize_material_import_frame(raw, file_name or Path(file.filename or "batch").stem)
-    inserted = _store_material_catalog_rows(normalized, file_name or Path(file.filename or "batch").stem)
+    normalized = _normalize_material_import_frame(raw, file_name or Path(file.filename or "batch").stem, category)
+    inserted = _store_material_rows(normalized, file_name or Path(file.filename or "batch").stem)
     return {
         "inserted": inserted,
         "file_name": file_name or Path(file.filename or "batch").stem,
@@ -1620,7 +1034,7 @@ async def import_materials_file(
 @app.post("/api/process")
 async def process_endpoint(
     files: List[UploadFile] = File(...),
-    materials: Optional[UploadFile] = File(None),
+    materials: UploadFile | None = File(None),
 ) -> Dict[str, Any]:
     if not files:
         raise HTTPException(status_code=400, detail="Необходимо отправить хотя бы один файл сметы.")
@@ -1652,8 +1066,8 @@ async def process_endpoint(
 
 @app.post("/api/process2")
 async def process2_endpoint(
-    file: Optional[UploadFile] = File(None),
-    materials: Optional[UploadFile] = File(None),
+    file: UploadFile | None = File(None),
+    materials: UploadFile | None = File(None),
 ) -> Dict[str, Any]:
     with tempfile.TemporaryDirectory() as tmpdir:
         if file is None:
@@ -1733,9 +1147,9 @@ async def process2_export(
 @app.post("/api/process3")
 async def process3_endpoint(
     mode: str = Form("single"),
-    file1: Optional[UploadFile] = File(None),
-    file2: Optional[UploadFile] = File(None),
-    materials: Optional[UploadFile] = File(None),
+    file1: UploadFile | None = File(None),
+    file2: UploadFile | None = File(None),
+    materials: UploadFile | None = File(None),
 ) -> Dict[str, Any]:
     normalized_mode = "compare" if str(mode).strip().lower() == "compare" else "single"
 
@@ -1899,7 +1313,7 @@ async def process3_export(
 async def process_export(
     files: List[UploadFile] = File(...),
     mode: str = Form("plain"),
-    materials: Optional[UploadFile] = File(None),
+    materials: UploadFile | None = File(None),
 ) -> FileResponse:
     if not files:
         raise HTTPException(status_code=400, detail="Нужно отправить файлы смет для экспорта.")

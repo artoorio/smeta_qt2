@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Smeta Toolkit Web</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="radiant"></div>
+    <main class="shell">
+      {% block content %}{% endblock %}
+    </main>
+    {% block shared_scripts %}
+      <script src="/static/report-core.js" defer></script>
+      {% block app_script %}
+        <script src="/static/app.js" defer></script>
+      {% endblock %}
+    {% endblock %}
+    {% block page_scripts %}{% endblock %}
+  </body>
+</html>
