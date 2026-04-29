@@ -2,6 +2,9 @@
   const core = window.ReportCore;
   if (!core) return;
 
+  const API_BASE = window.PROCESS_API_BASE || "/api/process3";
+  const EXPORT_PREFIX = window.PROCESS_EXPORT_PREFIX || "process3";
+
   const state = {
     mode: "single",
     file1: null,
@@ -40,6 +43,7 @@
     modeInput: document.getElementById("process3-mode-input"),
     file2Wrap: document.getElementById("process3-file2-wrap"),
     materialsWrap: document.getElementById("process3-materials-wrap"),
+    description: document.getElementById("process3-description"),
     status: document.getElementById("process3-status"),
     tabs: document.getElementById("process3-sheet-tabs"),
     filterBar: document.getElementById("process3-filter-bar"),
@@ -78,13 +82,18 @@
   ];
 
   const singleLabels = {
-    detail: "Данные анализа",
+    detail: "Смета",
     summary: "Итоги анализа",
   };
 
   const compareLabels = {
     detail: "Customer",
     summary: "Summary",
+  };
+
+  const modeDescriptions = {
+    single: "Ниже вы увидите диаграммы, кликабельные разделы и подразделы, а также таблицы, которые можно сортировать по столбцам.",
+    compare: "Ниже вы увидите диаграммы, кликабельные разделы и подразделы, таблицу сравнения и расхождения; столбцы можно сортировать.",
   };
 
   function showStatus(message, tone = "info") {
@@ -113,6 +122,7 @@
     if (dom.tabs) dom.tabs.hidden = !state.detail;
     if (dom.summaryBySection) dom.summaryBySection.classList.toggle("active", state.summaryMode === "section");
     if (dom.summaryBySubsection) dom.summaryBySubsection.classList.toggle("active", state.summaryMode !== "section");
+    if (dom.description) dom.description.textContent = modeDescriptions[state.mode] || "";
 
     const labels = state.mode === "compare" ? compareLabels : singleLabels;
     const detailTab = dom.tabs?.querySelector('[data-process3-sheet-target="process3-detail"]');
@@ -808,7 +818,7 @@
     if (state.mode === "single" && state.materials) formData.append("materials", state.materials);
 
     try {
-      const payload = await fetchJson("/api/process3", formData);
+      const payload = await fetchJson(API_BASE, formData);
       state.reportId = payload.report_id;
       state.detail = payload.detail;
       state.summary = payload.summary;
@@ -830,7 +840,7 @@
       if (dom.materialFilter) dom.materialFilter.value = "";
       clearMaterialSelection();
       renderMaterialSummary();
-      showStatus(`Строк: ${payload.row_count}, общая стоимость: ${Number(payload.total_cost).toLocaleString()} ₽`, "success");
+      showStatus(`Строк: ${payload.row_count}, общая стоимость: ${Number(payload.total_cost).toLocaleString()} ₽ Без НДС и лимитированных затрат.`, "success");
       renderCurrent();
       setMode(payload.mode || state.mode);
       activateSheet("process3-summary");
@@ -846,13 +856,13 @@
     }
     const formData = new FormData();
     formData.append("report_id", state.reportId);
-    const response = await fetch(`/api/process3/export/${format}`, { method: "POST", body: formData });
+    const response = await fetch(`${API_BASE}/export/${format}`, { method: "POST", body: formData });
     if (!response.ok) {
       showStatus((await response.text()) || "Не удалось сформировать файл.", "error");
       return;
     }
     const blob = await response.blob();
-    const suggested = response.headers.get("content-disposition")?.match(/filename="?([^";]+)"?/)?.[1] || `process3_${format}`;
+    const suggested = response.headers.get("content-disposition")?.match(/filename="?([^";]+)"?/)?.[1] || `${EXPORT_PREFIX}_${format}`;
     const anchor = document.createElement("a");
     anchor.href = URL.createObjectURL(blob);
     anchor.download = suggested;

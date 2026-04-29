@@ -31,6 +31,8 @@ from db import (
     SmetaMaterialLink,
     SessionLocal,
     SmetaRow,
+    load_dataframe,
+    save_dataframe,
 )
 from fact_export import export_with_fact_formula
 from export_formatting import apply_readable_sheet_layout, dataframe_to_readable_html, dataframes_to_readable_html
@@ -377,7 +379,7 @@ def _build_process2_customer_frame(detail_df: pd.DataFrame) -> pd.DataFrame:
     return customer.fillna("")
 
 
-def _build_process2_payload(df: pd.DataFrame) -> tuple[str, Dict[str, Any]]:
+def _build_process_report_payload(df: pd.DataFrame) -> tuple[str, Dict[str, pd.DataFrame], Dict[str, Any]]:
     frames = _prepare_process_frames(df)
     report_id = uuid4().hex
     detail = _build_process2_customer_frame(frames["detail"].drop(columns=["Название объекта"], errors="ignore"))
@@ -417,6 +419,15 @@ def _build_process2_payload(df: pd.DataFrame) -> tuple[str, Dict[str, Any]]:
         "missing": [],
         "total_cost": float(df.get("Стоимость", pd.Series([0])).sum()),
         "row_count": detail_preview["row_count"],
+    }
+    return report_id, frames, payload
+
+
+def _build_process2_payload(df: pd.DataFrame) -> tuple[str, Dict[str, Any]]:
+    report_id, frames, payload = _build_process_report_payload(df)
+    process2_registry[report_id] = {
+        "frames": frames,
+        "ts": datetime.utcnow(),
     }
     return report_id, payload
 
@@ -708,6 +719,7 @@ app.mount("/static", StaticFiles(directory=Path(__file__).resolve().parent / "st
 registry = ReportRegistry()
 process2_registry: Dict[str, Dict[str, Any]] = {}
 process3_registry: Dict[str, Dict[str, Any]] = {}
+process4_registry: Dict[str, Dict[str, Any]] = {}
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DEBUG_PROJECT = PROJECT_ROOT / "проект.xlsx"
 DEFAULT_DEBUG_FACT = PROJECT_ROOT / "факт.xlsx"
@@ -745,6 +757,11 @@ def process2_page(request: Request) -> HTMLResponse:
 @app.get("/process3", response_class=HTMLResponse)
 def process3_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "process3.html", {"request": request})
+
+
+@app.get("/process4", response_class=HTMLResponse)
+def process4_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "process4.html", {"request": request})
 
 
 @app.get("/compare", response_class=HTMLResponse)
@@ -1886,6 +1903,116 @@ async def process3_export(
         else:
             shutil.rmtree(tmpdir, ignore_errors=True)
             raise HTTPException(status_code=400, detail="Неизвестный формат экспорта.")
+
+    filename = os.path.basename(output_path)
+    return FileResponse(
+        output_path,
+        filename=filename,
+        background=BackgroundTask(lambda: shutil.rmtree(tmpdir, ignore_errors=True)),
+    )
+
+
+@app.post("/api/process4")
+async def process4_endpoint(
+    file1: UploadFile = File(...),
+    materials: Optional[UploadFile] = File(None),
+) -> Dict[str, Any]:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = _save_upload(file1, tmpdir)
+        materials_path = _save_upload(materials, tmpdir) if materials else None
+        try:
+            df = process_smeta(path, materials_path)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    session = SessionLocal()
+    try:
+        file_record = FileRecord(
+            orig_name=file1.filename or Path(path).name,
+            saved_path=file1.filename or Path(path).name,
+            processed_path="",
+            status="processed",
+            comment=None,
+        )
+        session.add(file_record)
+        session.flush()
+        file_id = int(file_record.id)
+        save_dataframe(session, file_id, df)
+        db_df = load_dataframe(session, file_id)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+    report_id, frames, payload = _build_process_report_payload(db_df)
+    process4_registry[report_id] = {
+        "kind": "single",
+        "frames": frames,
+        "file_id": file_id,
+        "created": datetime.utcnow(),
+    }
+    payload["mode"] = "single"
+    payload["source_name"] = file1.filename or Path(path).name
+    return payload
+
+
+@app.post("/api/process4/export/{format}")
+async def process4_export(
+    format: str,
+    report_id: str = Form(...),
+) -> FileResponse:
+    entry = process4_registry.get(report_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Отчёт Обработка4 не найден или устарел.")
+
+    file_id = int(entry["file_id"])
+    frames = entry.get("frames")
+    if not frames:
+        session = SessionLocal()
+        try:
+            df = load_dataframe(session, file_id)
+        finally:
+            session.close()
+        _, frames, _ = _build_process_report_payload(df)
+    visible_frames = {name: _strip_hidden_columns(frame) for name, frame in frames.items()}
+    tmpdir = tempfile.mkdtemp()
+    output_path = os.path.join(tmpdir, f"process4_{format}")
+
+    if format == "html":
+        output_path += ".html"
+        with open(output_path, "w", encoding="utf-8") as handle:
+            handle.write(
+                dataframes_to_readable_html(
+                    [
+                        ("Данные", visible_frames["detail"]),
+                        ("Итоги", visible_frames["summary"]),
+                        ("Файлы", visible_frames["files"]),
+                    ],
+                    title="Обработка4",
+                    no_wrap_columns={"Файлы": {"Файл"}},
+                )
+            )
+    elif format == "excel":
+        output_path += ".xlsx"
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            for sheet_name, frame in [
+                ("Данные", visible_frames["detail"]),
+                ("Итоги", visible_frames["summary"]),
+                ("Файлы", visible_frames["files"]),
+            ]:
+                frame.to_excel(writer, index=False, sheet_name=sheet_name)
+                ws = writer.sheets[sheet_name]
+                if not frame.empty:
+                    apply_readable_sheet_layout(ws, frame)
+    elif format == "missing":
+        output_path += ".txt"
+        with open(output_path, "w", encoding="utf-8") as handle:
+            handle.write("Отсутствующих позиций не обнаружено.")
+    else:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail="Неизвестный формат экспорта.")
 
     filename = os.path.basename(output_path)
     return FileResponse(

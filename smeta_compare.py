@@ -699,7 +699,7 @@ class SmetaComparator:
         #print('#9')
         summary[col1] = pd.to_numeric(summary[col1], errors="coerce").fillna(0)
         summary[col2] = pd.to_numeric(summary[col2], errors="coerce").fillna(0)
-        summary[f"Разница ({c})"] = summary[col1] - summary[col2]
+        summary[f"Разница ({c})"] = summary[col2] - summary[col1]
 
         #print('#10')
 
@@ -838,7 +838,7 @@ class SmetaComparator:
             "Ст-ть (Проект)": cost1,
             "Ст-ть (Факт)": cost2,
         })
-        info["Разница (Ст-ть)"] = info["Ст-ть (Проект)"] - info["Ст-ть (Факт)"]
+        info["Разница (Ст-ть)"] = info["Ст-ть (Факт)"] - info["Ст-ть (Проект)"]
         info = info[info["Разница (Ст-ть)"] != 0].copy()
 
         def select_by_coverage(frame: pd.DataFrame, positive: bool) -> pd.DataFrame:
@@ -897,7 +897,7 @@ class SmetaComparator:
             "Ст-ть (Проект)": cost1,
             "Ст-ть (Факт)": cost2,
         })
-        report["Разница (Ст-ть)"] = report["Ст-ть (Проект)"] - report["Ст-ть (Факт)"]
+        report["Разница (Ст-ть)"] = report["Ст-ть (Факт)"] - report["Ст-ть (Проект)"]
         mismatch_mask = (
             (report["Ед. изм. (Проект)"] != report["Ед. изм. (Факт)"])
             & (report["Ед. изм. (Проект)"] != "")
@@ -1274,12 +1274,13 @@ class SmetaComparator:
             value_col = self.value_column[0]
 
         d1, d2 = self._align()
+        d1_value = pd.to_numeric(d1[value_col], errors="coerce")
         # отсутствует в d2
         absent_mask = d2[self.compare_column].isna() | (
             d2[self.compare_column].astype(str).str.strip() == ""
         )
         # и НЕ отрицательное значение в d1 (NaN/положительное/ноль допускаем)
-        non_negative_mask = d1[value_col].isna() | (d1[value_col] >= 0)
+        non_negative_mask = d1_value.isna() | (d1_value >= 0)
 
         final_mask = absent_mask & non_negative_mask
         missing_list = d1.loc[final_mask, self.compare_column].astype(str).tolist()
@@ -1308,10 +1309,11 @@ class SmetaComparator:
             value_col = self.value_column[0]
 
         d1, d2 = self._align()
+        d1_value = pd.to_numeric(d1[value_col], errors="coerce")
         absent_mask = d2[self.compare_column].isna() | (
                 d2[self.compare_column].astype(str).str.strip() == ""
         )
-        nonneg_mask = d1[value_col].isna() | (d1[value_col] >= 0)
+        nonneg_mask = d1_value.isna() | (d1_value >= 0)
         final_mask = absent_mask & nonneg_mask
         return d1.loc[final_mask, self.compare_column].astype(str).tolist()
 
@@ -1329,14 +1331,16 @@ class SmetaComparator:
             value_col = self.value_column[0]
 
         d1, d2 = self._align()
+        d1_value = pd.to_numeric(d1[value_col], errors="coerce")
+        d2_value = pd.to_numeric(d2[value_col], errors="coerce")
 
         # Маски для отсутствия
         absent_in_d2 = d2[self.compare_column].isna() | (d2[self.compare_column].astype(str).str.strip() == "")
         absent_in_d1 = d1[self.compare_column].isna() | (d1[self.compare_column].astype(str).str.strip() == "")
 
         # Маски для значений > 0
-        gt0_d1 = d1[value_col].fillna(0) > 0
-        gt0_d2 = d2[value_col].fillna(0) > 0
+        gt0_d1 = d1_value.fillna(0) > 0
+        gt0_d2 = d2_value.fillna(0) > 0
 
         # Итоговые списки
         removed = d1.loc[absent_in_d2 & gt0_d1, self.compare_column].astype(str).tolist()
@@ -1358,16 +1362,18 @@ class SmetaComparator:
             value_col = self.value_column[0]
 
         d1, d2 = self._align()
+        d1_value = pd.to_numeric(d1[value_col], errors="coerce")
+        d2_value = pd.to_numeric(d2[value_col], errors="coerce")
 
         def unique_ordered(seq):
             seen = set()
             return [x for x in seq if not (x in seen or seen.add(x))]
 
         unique1 = unique_ordered(
-            d1.loc[d1[value_col].fillna(0) > 0, self.compare_column].astype(str).tolist()
+            d1.loc[d1_value.fillna(0) > 0, self.compare_column].astype(str).tolist()
         )
         unique2 = unique_ordered(
-            d2.loc[d2[value_col].fillna(0) > 0, self.compare_column].astype(str).tolist()
+            d2.loc[d2_value.fillna(0) > 0, self.compare_column].astype(str).tolist()
         )
 
         removed = [x for x in unique1 if x not in unique2]

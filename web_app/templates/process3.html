@@ -3,13 +3,11 @@
 {% block content %}
   <header class="hero">
     <p class="eyebrow">Smeta Toolkit · Web</p>
-    <h1>Обработка3</h1>
-    <p>Единый режим для анализа одной сметы и для сравнения двух смет. Логика рендеринга опирается на общий табличный core, чтобы гистограммы, сортировки и навигация работали одинаково предсказуемо.</p>
+    <h1>Анализ и сравнение смет</h1>
+    <p>Основной режим: анализ одной сметы, сравнение двух смет, материалы и сводки.</p>
     <div class="actions">
       <a class="ghost" href="/">Главная</a>
-      <a class="ghost" href="/process">Обычная обработка</a>
-      <a class="ghost" href="/process2">Обработка2</a>
-      <a class="ghost" href="/compare">Сравнение</a>
+      <a class="ghost" href="/process4">Анализ и сравнение смет ver2</a>
     </div>
   </header>
 
@@ -34,10 +32,9 @@
       </label>
       <button type="submit" class="primary">Сформировать</button>
     </form>
+    <p id="process3-description" class="summary"></p>
     <div class="actions">
-      <button class="ghost" data-process3-export="html">HTML</button>
-      <button class="ghost" data-process3-export="excel">Excel</button>
-      <button class="ghost" data-process3-export="missing">TXT отсутствия</button>
+      <button class="ghost" data-process3-export="excel">Скачать результат обработки в Excel</button>
       <button class="ghost" data-process3-export="diff">Excel diff</button>
     </div>
     <div id="process3-status" class="summary"></div>
