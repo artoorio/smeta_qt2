@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <header class="hero">
+    <p class="eyebrow">Smeta Toolkit · Web</p>
+    <h1>Анализ и сравнение смет ver2</h1>
+    <p>Парсинг Excel с сохранением строк в БД и выдачей таблиц уже из SQLite.</p>
+    <div class="actions">
+      <a class="ghost" href="/">Главная</a>
+      <a class="ghost" href="/process3">Анализ и сравнение смет</a>
+    </div>
+  </header>
+
+  <section class="card">
+    <form id="process3-form" action="/api/process4" method="post" enctype="multipart/form-data" novalidate>
+      <input type="hidden" name="mode" id="process3-mode-input" value="single" />
+      <label>
+        Смета
+        <input type="file" name="file1" accept=".xlsx,.xls" />
+      </label>
+      <label id="process3-materials-wrap">
+        Файл цен на материалы (опционально)
+        <input type="file" name="materials" accept=".xlsx,.xls" />
+      </label>
+      <button type="submit" class="primary">Сформировать</button>
+    </form>
+    <p id="process3-description" class="summary"></p>
+    <div class="actions">
+      <button class="ghost" data-process3-export="excel">Скачать результат обработки в Excel</button>
+      <button class="ghost" data-process3-export="html">HTML</button>
+      <button class="ghost" data-process3-export="missing">TXT отсутствия</button>
+    </div>
+    <div id="process3-status" class="summary"></div>
+    <div class="sheet-tabs" id="process3-sheet-tabs" hidden>
+      <button type="button" class="sheet-tab" data-process3-sheet-target="process3-summary">Итоги</button>
+      <button type="button" class="sheet-tab active" data-process3-sheet-target="process3-detail">Данные</button>
+      <button type="button" class="sheet-tab" data-process3-sheet-target="process3-materials">Материалы</button>
+      <button type="button" class="sheet-tab" data-process3-sheet-target="process3-info">Инфо</button>
+      <button type="button" class="sheet-tab" data-process3-sheet-target="process3-unit-diff">Отличается ед. изм.</button>
+      <button type="button" class="sheet-tab" data-process3-sheet-target="process3-files">Файлы</button>
+    </div>
+    <div class="inline-filter" id="process3-filter-bar" hidden>
+      <input
+        type="text"
+        id="process3-filter-input"
+        placeholder="Фильтр таблицы: раздел, подраздел, код, наименование, ед.изм., числа"
+      />
+      <button type="button" class="ghost" id="process3-filter-clear">Сбросить</button>
+    </div>
+    <div class="inline-filter" id="process3-summary-view-bar" hidden>
+      <button type="button" class="ghost active" id="process3-summary-by-section">По разделам</button>
+      <button type="button" class="ghost" id="process3-summary-by-subsection">По подразделам</button>
+    </div>
+    <div id="process3-detail" class="table-wrapper sheet-panel"></div>
+    <section id="process3-materials" class="card material-link-panel sheet-panel" hidden>
+      <div class="material-link-header">
+        <div>
+          <p class="eyebrow">Связь материалов</p>
+          <h2>Материалы сметы и материалы БД</h2>
+        </div>
+        <div class="material-link-header-actions">
+          <button type="button" class="ghost" id="process3-material-clear">Сбросить выбор</button>
+          <button type="button" class="ghost danger" id="process3-material-delete-links">Удалить связи по смете</button>
+        </div>
+      </div>
+      <div id="process3-material-summary" class="material-link-summary">
+        <div class="material-link-summary-card">
+          <span>Стоимость материалов по смете</span>
+          <strong id="process3-material-summary-plan">0 ₽</strong>
+        </div>
+        <div class="material-link-summary-card">
+          <span>Стоимость материалов по факту</span>
+          <strong id="process3-material-summary-fact">0 ₽</strong>
+        </div>
+      </div>
+      <div class="material-link-grid">
+        <div class="material-link-list">
+          <div class="material-link-list-head">
+            <h3>Материалы сметы</h3>
+            <label class="material-link-filter">
+              <span>Фильтр</span>
+              <input id="process3-material-filter" placeholder="По наименованию, коду, единице" />
+            </label>
+          </div>
+          <div id="process3-material-source-list" class="material-source-list"></div>
+        </div>
+        <div class="material-link-search">
+          <div class="material-link-selected-db">
+            <button type="button" class="primary" id="process3-material-bind" disabled>Связать выбранные материалы</button>
+          </div>
+          <div class="material-link-results">
+            <h3>Материалы БД</h3>
+            <div id="process3-material-results" class="material-results-list"></div>
+          </div>
+        </div>
+      </div>
+      <div id="process3-material-status" class="summary"></div>
+    </section>
+    <div id="process3-summary" class="table-wrapper sheet-panel" hidden></div>
+    <div id="process3-info" class="table-wrapper sheet-panel" hidden></div>
+    <div id="process3-unit-diff" class="table-wrapper sheet-panel" hidden></div>
+    <div id="process3-files" class="table-wrapper sheet-panel" hidden></div>
+  </section>
+{% endblock %}
+
+{% block page_scripts %}
+  <script>
+    window.PROCESS_API_BASE = "/api/process4";
+    window.PROCESS_EXPORT_PREFIX = "process4";
+  </script>
+  <script src="/static/process3.js" defer></script>
+{% endblock %}
+
+{% block app_script %}{% endblock %}
