@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import QTabWidget
 import pandas as pd
 from missing_dialog import MissingDialog
 from export_formatting import apply_readable_sheet_layout, dataframe_to_readable_html
+from materials_db_ui import MaterialsDatabaseWindow
 
 # эти классы уже существуют в вашем main.py
 
@@ -923,18 +924,22 @@ class TableDialog(QDialog):
 class MainMenu(QWidget):
     switch_to_process = pyqtSignal()
     switch_to_compare = pyqtSignal()
+    switch_to_materials = pyqtSignal()
 
     def __init__(self):
         super().__init__()
         btn_proc = QPushButton("Обработать сметы")
         btn_comp = QPushButton("Сравнить сметы")
+        btn_materials = QPushButton("Материалы из БД")
         btn_proc.clicked.connect(self.switch_to_process)
         btn_comp.clicked.connect(self.switch_to_compare)
+        btn_materials.clicked.connect(self.switch_to_materials)
 
         lay = QVBoxLayout(self)
         lay.addStretch(1)
         lay.addWidget(btn_proc)
         lay.addWidget(btn_comp)
+        lay.addWidget(btn_materials)
         lay.addStretch(1)
 
 
@@ -951,21 +956,24 @@ class MainWindow(QMainWindow):
         self.menu = MainMenu()
         self.proc_win = ProcessWindow()
         self.comp_win = CompareWindow()
+        self.materials_win = MaterialsDatabaseWindow()
 
         self.stack.addWidget(self.menu)      # index 0
         self.stack.addWidget(self.proc_win)  # index 1
         self.stack.addWidget(self.comp_win)  # index 2
+        self.stack.addWidget(self.materials_win)  # index 3
         self.setCentralWidget(self.stack)
 
         # сигналы
         self.menu.switch_to_process.connect(lambda: self.stack.setCurrentIndex(1))
         self.menu.switch_to_compare.connect(lambda: self.stack.setCurrentIndex(2))
+        self.menu.switch_to_materials.connect(lambda: self.stack.setCurrentIndex(3))
 
         # «домой» по Esc
         self.stack.currentChanged.connect(self._update_title)
 
     def _update_title(self, idx):
-        titles = ["Меню", "Обработка смет", "Сравнение смет"]
+        titles = ["Меню", "Обработка смет", "Сравнение смет", "Материалы БД"]
         self.setWindowTitle(f"Smeta Toolkit — {titles[idx]}")
 
     def keyPressEvent(self, e):

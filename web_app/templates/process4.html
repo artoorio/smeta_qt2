@@ -12,12 +12,85 @@
   </header>
 
   <section class="card">
+    <div class="inline-filter" id="process3-mode-bar">
+      <button type="button" class="ghost active" data-process3-mode="single">Анализ сметы</button>
+      <button type="button" class="ghost" data-process3-mode="compare">Сравнение двух смет</button>
+    </div>
+
+    <section class="card" style="margin-bottom: 1rem;">
+      <div class="material-link-header">
+        <div>
+          <p class="eyebrow">База данных</p>
+          <h2>Загрузить ранее обработанную смету</h2>
+        </div>
+      </div>
+      <div class="grid" style="grid-template-columns: 1fr auto; align-items: end;">
+        <label>
+          Выберите смету из БД
+          <select id="process4-db-file-select">
+            <option value="">Загрузка списка...</option>
+          </select>
+        </label>
+        <div class="actions" style="margin: 0;">
+          <button type="button" class="primary" id="process4-db-load">Открыть из БД</button>
+          <button type="button" class="ghost" id="process4-db-refresh">Обновить список</button>
+        </div>
+      </div>
+      <p id="process4-db-status" class="summary"></p>
+    </section>
+
     <form id="process3-form" action="/api/process4" method="post" enctype="multipart/form-data" novalidate>
       <input type="hidden" name="mode" id="process3-mode-input" value="single" />
-      <label>
-        Смета
-        <input type="file" name="file1" accept=".xlsx,.xls" />
-      </label>
+      <input type="hidden" name="file1_db_id" id="process4-file1-db-id" value="" />
+      <input type="hidden" name="file2_db_id" id="process4-file2-db-id" value="" />
+      <div class="file-source-block">
+        <label>
+          Источник первой сметы
+          <select id="process4-file1-source">
+            <option value="file" selected>Excel-файл</option>
+            <option value="db">Запись из БД</option>
+          </select>
+        </label>
+        <label>
+          Смета
+          <div id="process4-file1-file-wrap">
+            <input type="file" name="file1" accept=".xlsx,.xls" />
+          </div>
+        </label>
+        <div id="process4-file1-db-wrap" class="db-inline-source" hidden>
+          <label>
+            Выберите запись из БД
+            <select id="process4-file1-db-select">
+              <option value="">Загрузка списка...</option>
+            </select>
+          </label>
+          <button type="button" class="ghost" id="process4-file1-db-clear">Сбросить</button>
+        </div>
+      </div>
+      <div id="process3-file2-wrap" hidden class="file-source-block">
+        <label>
+          Источник второй сметы
+          <select id="process4-file2-source">
+            <option value="file" selected>Excel-файл</option>
+            <option value="db">Запись из БД</option>
+          </select>
+        </label>
+        <label>
+          Вторая смета для сравнения
+          <div id="process4-file2-file-wrap">
+            <input type="file" name="file2" accept=".xlsx,.xls" />
+          </div>
+        </label>
+        <div id="process4-file2-db-wrap" class="db-inline-source" hidden>
+          <label>
+            Выберите запись из БД
+            <select id="process4-file2-db-select">
+              <option value="">Загрузка списка...</option>
+            </select>
+          </label>
+          <button type="button" class="ghost" id="process4-file2-db-clear">Сбросить</button>
+        </div>
+      </div>
       <label id="process3-materials-wrap">
         Файл цен на материалы (опционально)
         <input type="file" name="materials" accept=".xlsx,.xls" />
@@ -27,6 +100,7 @@
     <p id="process3-description" class="summary"></p>
     <div class="actions">
       <button class="ghost" data-process3-export="excel">Скачать результат обработки в Excel</button>
+      <button class="ghost" data-process3-export="diff">Excel diff</button>
       <button class="ghost" data-process3-export="html">HTML</button>
       <button class="ghost" data-process3-export="missing">TXT отсутствия</button>
     </div>

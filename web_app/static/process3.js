@@ -10,6 +10,7 @@
     file1: null,
     file2: null,
     materials: null,
+    sourceName: "",
     reportId: null,
     detail: null,
     summary: null,
@@ -31,6 +32,8 @@
     materialCatalogLoading: false,
     materialLinks: [],
     materialLinksLoading: false,
+    dbFiles: [],
+    dbFilesLoading: false,
     sort: {
       column: "",
       direction: "desc",
@@ -70,6 +73,22 @@
     materialBind: document.getElementById("process3-material-bind"),
     materialSummaryPlan: document.getElementById("process3-material-summary-plan"),
     materialSummaryFact: document.getElementById("process3-material-summary-fact"),
+    dbFileSelect: document.getElementById("process4-db-file-select"),
+    dbFileLoad: document.getElementById("process4-db-load"),
+    dbFileRefresh: document.getElementById("process4-db-refresh"),
+    dbFileStatus: document.getElementById("process4-db-status"),
+    file1DbId: document.getElementById("process4-file1-db-id"),
+    file2DbId: document.getElementById("process4-file2-db-id"),
+    file1SourceSelect: document.getElementById("process4-file1-source"),
+    file2SourceSelect: document.getElementById("process4-file2-source"),
+    file1FileWrap: document.getElementById("process4-file1-file-wrap"),
+    file2FileWrap: document.getElementById("process4-file2-file-wrap"),
+    file1DbWrap: document.getElementById("process4-file1-db-wrap"),
+    file2DbWrap: document.getElementById("process4-file2-db-wrap"),
+    file1DbSelect: document.getElementById("process4-file1-db-select"),
+    file2DbSelect: document.getElementById("process4-file2-db-select"),
+    file1DbClear: document.getElementById("process4-file1-db-clear"),
+    file2DbClear: document.getElementById("process4-file2-db-clear"),
   };
 
   const sheetOrder = [
@@ -100,6 +119,60 @@
     if (!dom.status) return;
     dom.status.textContent = message;
     dom.status.dataset.tone = tone;
+  }
+
+  function showDbStatus(message, tone = "info") {
+    if (!dom.dbFileStatus) return;
+    dom.dbFileStatus.textContent = message;
+    dom.dbFileStatus.dataset.tone = tone;
+  }
+
+  function setSourceMode(side, source) {
+    const nextSource = source === "db" ? "db" : "file";
+    const isFirst = side === "file1";
+    const sourceSelect = isFirst ? dom.file1SourceSelect : dom.file2SourceSelect;
+    const fileWrap = isFirst ? dom.file1FileWrap : dom.file2FileWrap;
+    const dbWrap = isFirst ? dom.file1DbWrap : dom.file2DbWrap;
+    const dbIdInput = isFirst ? dom.file1DbId : dom.file2DbId;
+    const dbSelect = isFirst ? dom.file1DbSelect : dom.file2DbSelect;
+    const fileInput = isFirst ? dom.form?.querySelector("input[name='file1']") : dom.form?.querySelector("input[name='file2']");
+
+    if (sourceSelect) sourceSelect.value = nextSource;
+    if (fileWrap) fileWrap.hidden = nextSource !== "file";
+    if (dbWrap) dbWrap.hidden = nextSource !== "db";
+    if (nextSource === "file") {
+      if (dbIdInput) dbIdInput.value = "";
+      if (dbSelect) dbSelect.value = "";
+    } else {
+      if (fileInput) fileInput.value = "";
+      if (isFirst) {
+        state.file1 = null;
+      } else {
+        state.file2 = null;
+      }
+    }
+  }
+
+  function getSelectedSource(side) {
+    const isFirst = side === "file1";
+    const sourceSelect = isFirst ? dom.file1SourceSelect : dom.file2SourceSelect;
+    return sourceSelect?.value === "db" ? "db" : "file";
+  }
+
+  function buildStoredSmetaOptions(includePrompt = true) {
+    const rows = Array.isArray(state.dbFiles) ? state.dbFiles : [];
+    if (!rows.length) {
+      return ["<option value=''>Сохранённых смет нет</option>"];
+    }
+    const options = includePrompt ? ["<option value=''>Выберите смету...</option>"] : ["<option value=''>Не использовать БД</option>"];
+    rows.forEach((row) => {
+      const dateText = row.timestamp ? new Date(row.timestamp).toLocaleString("ru-RU") : "";
+      const label = [row.orig_name || `Смета #${row.file_id}`, dateText, `${Number(row.row_count || 0)} строк`]
+        .filter(Boolean)
+        .join(" · ");
+      options.push(`<option value="${core.escapeText(row.file_id)}">${core.escapeText(label)}</option>`);
+    });
+    return options;
   }
 
   function setMode(mode) {
@@ -205,7 +278,7 @@
   }
 
   function getCurrentSmetaFileName() {
-    return String(state.file1?.name || "проект.xlsx").trim();
+    return String(state.sourceName || state.file1?.name || "проект.xlsx").trim();
   }
 
   function materialLinkSignatureFromRow(row) {
@@ -360,6 +433,113 @@
       renderMaterialSourceList();
       renderMaterialCatalog();
       renderMaterialSummary();
+    }
+  }
+
+  function renderStoredSmetaOptions() {
+    const rows = Array.isArray(state.dbFiles) ? state.dbFiles : [];
+    const targets = [dom.dbFileSelect, dom.file1DbSelect, dom.file2DbSelect].filter(Boolean);
+    targets.forEach((select) => {
+      if (state.dbFilesLoading) {
+        select.innerHTML = "<option value=''>Загружаем список...</option>";
+        select.disabled = true;
+        return;
+      }
+      select.disabled = rows.length === 0;
+      const includePrompt = select === dom.dbFileSelect || select === dom.file1DbSelect || select === dom.file2DbSelect;
+      const options = buildStoredSmetaOptions(includePrompt);
+      select.innerHTML = options.join("");
+    });
+  }
+
+  function syncInlineDbSelects() {
+    if (!state.dbFiles.length) return;
+    const options = buildStoredSmetaOptions(false).join("");
+    [dom.file1DbSelect, dom.file2DbSelect].filter(Boolean).forEach((select) => {
+      select.innerHTML = options;
+      select.disabled = false;
+    });
+  }
+
+  async function loadStoredSmetas(force = false) {
+    if (!dom.dbFileSelect) return;
+    if (state.dbFilesLoading) return;
+    if (state.dbFiles.length && !force) {
+      renderStoredSmetaOptions();
+      return;
+    }
+    state.dbFilesLoading = true;
+    renderStoredSmetaOptions();
+    showDbStatus("Загружаем список сохранённых смет...", "info");
+    try {
+      const response = await fetch("/api/process4/files");
+      if (!response.ok) {
+        throw new Error((await response.text()) || "Не удалось загрузить список смет.");
+      }
+      const payload = await response.json();
+      state.dbFiles = Array.isArray(payload.rows) ? payload.rows : [];
+      renderStoredSmetaOptions();
+      syncInlineDbSelects();
+      showDbStatus(`Найдено смет в БД: ${state.dbFiles.length}.`, "success");
+    } catch (error) {
+      state.dbFiles = [];
+      renderStoredSmetaOptions();
+      showDbStatus(error.message, "error");
+    } finally {
+      state.dbFilesLoading = false;
+      renderStoredSmetaOptions();
+      syncInlineDbSelects();
+    }
+  }
+
+  async function loadStoredSmetaFromDb(fileId) {
+    const numericId = Number(fileId);
+    if (!Number.isFinite(numericId) || numericId <= 0) {
+      showDbStatus("Сначала выберите смету из списка.", "warning");
+      return;
+    }
+    showDbStatus(`Открываем смету #${numericId} из БД...`, "info");
+    try {
+      const response = await fetch(`${API_BASE}/load/${numericId}`);
+      if (!response.ok) {
+        throw new Error((await response.text()) || "Не удалось загрузить смету из БД.");
+      }
+      const payload = await response.json();
+      state.reportId = payload.report_id;
+      state.detail = payload.detail;
+      state.summary = payload.summary;
+      state.info = payload.info;
+      state.unitDiff = payload.unit_diff;
+      state.files = payload.files;
+      state.filter = "";
+      state.summaryMode = "section";
+      state.resourceMode = "collapsed";
+      state.sort.column = "";
+      state.sort.direction = "desc";
+      state.materialLink.selectedRow = null;
+      state.materialLink.selectedRowKey = "";
+      state.materialLink.selectedMaterialId = null;
+      state.materialLink.selectedMaterial = null;
+      state.materialLink.binding = false;
+      state.materialLink.listFilter = "";
+      if (dom.filterInput) dom.filterInput.value = "";
+      if (dom.materialFilter) dom.materialFilter.value = "";
+      clearMaterialSelection();
+      renderMaterialSummary();
+      state.file1 = null;
+      state.file2 = null;
+      state.materials = null;
+      state.sourceName = payload.source_name || `file-${numericId}`;
+      if (dom.file1DbSelect) dom.file1DbSelect.value = String(numericId);
+      if (dom.file1DbId) dom.file1DbId.value = String(numericId);
+      setSourceMode("file1", "db");
+      showStatus(`Смета "${payload.source_name || numericId}" загружена из БД.`, "success");
+      renderCurrent();
+      setMode(payload.mode || "single");
+      activateSheet("process3-summary");
+    } catch (error) {
+      showDbStatus(error.message, "error");
+      showStatus(error.message, "error");
     }
   }
 
@@ -813,9 +993,13 @@
     event.preventDefault();
     const formData = new FormData();
     formData.append("mode", state.mode);
-    if (state.file1) formData.append("file1", state.file1);
-    if (state.mode === "compare" && state.file2) formData.append("file2", state.file2);
+    if (getSelectedSource("file1") === "file" && state.file1 instanceof File) formData.append("file1", state.file1);
+    if (state.mode === "compare" && getSelectedSource("file2") === "file" && state.file2 instanceof File) formData.append("file2", state.file2);
     if (state.mode === "single" && state.materials) formData.append("materials", state.materials);
+    const file1DbId = getSelectedSource("file1") === "db" ? (dom.file1DbId?.value || dom.file1DbSelect?.value || "") : "";
+    const file2DbId = getSelectedSource("file2") === "db" ? (dom.file2DbId?.value || dom.file2DbSelect?.value || "") : "";
+    if (file1DbId) formData.append("file1_db_id", file1DbId);
+    if (state.mode === "compare" && file2DbId) formData.append("file2_db_id", file2DbId);
 
     try {
       const payload = await fetchJson(API_BASE, formData);
@@ -840,7 +1024,12 @@
       if (dom.materialFilter) dom.materialFilter.value = "";
       clearMaterialSelection();
       renderMaterialSummary();
+      state.sourceName = payload.source_name || state.file1?.name || state.sourceName || "";
       showStatus(`Строк: ${payload.row_count}, общая стоимость: ${Number(payload.total_cost).toLocaleString()} ₽ Без НДС и лимитированных затрат.`, "success");
+      if (dom.dbFileSelect) {
+        state.dbFiles = [];
+        await loadStoredSmetas(true);
+      }
       renderCurrent();
       setMode(payload.mode || state.mode);
       activateSheet("process3-summary");
@@ -882,11 +1071,18 @@
     if (file1Input) {
       file1Input.addEventListener("change", (event) => {
         state.file1 = event.target.files[0] || null;
+        state.sourceName = state.file1?.name || state.sourceName;
+        setSourceMode("file1", "file");
+        if (dom.file1DbSelect) dom.file1DbSelect.value = "";
+        if (dom.file1DbId) dom.file1DbId.value = "";
       });
     }
     if (file2Input) {
       file2Input.addEventListener("change", (event) => {
         state.file2 = event.target.files[0] || null;
+        setSourceMode("file2", "file");
+        if (dom.file2DbSelect) dom.file2DbSelect.value = "";
+        if (dom.file2DbId) dom.file2DbId.value = "";
       });
     }
     if (materialsInput) {
@@ -959,15 +1155,97 @@
         bindSelectedMaterial();
       });
     }
+    if (dom.dbFileLoad) {
+      dom.dbFileLoad.addEventListener("click", () => {
+        if (dom.file1DbSelect && dom.dbFileSelect) {
+          dom.file1DbSelect.value = dom.dbFileSelect.value || "";
+          if (dom.file1DbId) dom.file1DbId.value = dom.dbFileSelect.value || "";
+        }
+        loadStoredSmetaFromDb(dom.dbFileSelect?.value);
+      });
+    }
+    if (dom.dbFileRefresh) {
+      dom.dbFileRefresh.addEventListener("click", () => {
+        state.dbFiles = [];
+        loadStoredSmetas(true);
+      });
+    }
+    if (dom.dbFileSelect) {
+      dom.dbFileSelect.addEventListener("change", () => {
+        const selected = dom.dbFileSelect.value;
+        if (selected) {
+          showDbStatus(`Выбрана смета #${selected}.`, "info");
+        }
+      });
+    }
+    if (dom.file1DbSelect) {
+      dom.file1DbSelect.addEventListener("change", () => {
+        if (dom.file1DbId) dom.file1DbId.value = dom.file1DbSelect.value || "";
+        state.file1 = null;
+        if (file1Input) file1Input.value = "";
+        setSourceMode("file1", "db");
+        if (dom.file1DbSelect.value) {
+          const selectedRow = state.dbFiles.find((row) => String(row.file_id) === String(dom.file1DbSelect.value));
+          if (selectedRow) {
+            state.sourceName = selectedRow.orig_name || state.sourceName;
+          }
+        }
+        showDbStatus(dom.file1DbSelect.value ? `Для первой сметы выбрана БД #${dom.file1DbSelect.value}.` : "Для первой сметы будет использован Excel-файл.", "info");
+      });
+    }
+    if (dom.file2DbSelect) {
+      dom.file2DbSelect.addEventListener("change", () => {
+        if (dom.file2DbId) dom.file2DbId.value = dom.file2DbSelect.value || "";
+        state.file2 = null;
+        if (file2Input) file2Input.value = "";
+        setSourceMode("file2", "db");
+        showDbStatus(dom.file2DbSelect.value ? `Для второй сметы выбрана БД #${dom.file2DbSelect.value}.` : "Для второй сметы будет использован Excel-файл.", "info");
+      });
+    }
+    if (dom.file1DbClear) {
+      dom.file1DbClear.addEventListener("click", () => {
+        if (dom.file1DbSelect) dom.file1DbSelect.value = "";
+        if (dom.file1DbId) dom.file1DbId.value = "";
+        state.file1 = null;
+        if (file1Input) file1Input.value = "";
+        setSourceMode("file1", "file");
+        showDbStatus("Для первой сметы будет использован Excel-файл.", "info");
+      });
+    }
+    if (dom.file2DbClear) {
+      dom.file2DbClear.addEventListener("click", () => {
+        if (dom.file2DbSelect) dom.file2DbSelect.value = "";
+        if (dom.file2DbId) dom.file2DbId.value = "";
+        state.file2 = null;
+        if (file2Input) file2Input.value = "";
+        setSourceMode("file2", "file");
+        showDbStatus("Для второй сметы будет использован Excel-файл.", "info");
+      });
+    }
+    if (dom.file1SourceSelect) {
+      dom.file1SourceSelect.addEventListener("change", () => {
+        setSourceMode("file1", dom.file1SourceSelect.value);
+      });
+    }
+    if (dom.file2SourceSelect) {
+      dom.file2SourceSelect.addEventListener("change", () => {
+        setSourceMode("file2", dom.file2SourceSelect.value);
+      });
+    }
     document.querySelectorAll("[data-process3-export]").forEach((button) => {
       button.addEventListener("click", () => handleExport(button.dataset.process3Export));
     });
 
     setMode("single");
+    setSourceMode("file1", "file");
+    setSourceMode("file2", "file");
     if (dom.file2Wrap) {
       dom.file2Wrap.hidden = true;
       dom.file2Wrap.style.display = "none";
       dom.file2Wrap.setAttribute("aria-hidden", "true");
+    }
+    if (dom.dbFileSelect) {
+      loadStoredSmetas(true);
     }
   });
 })();

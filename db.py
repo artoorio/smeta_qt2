@@ -13,6 +13,7 @@ class FileRecord(Base):
     id = Column(Integer, primary_key=True)
     orig_name = Column(String)
     saved_path = Column(String)
+    file_hash = Column(String, index=True)
     processed_path = Column(String)
     status = Column(String, default="uploaded")
     comment = Column(Text)
@@ -248,5 +249,44 @@ def _ensure_smeta_row_columns() -> None:
             connection.exec_driver_sql(f"ALTER TABLE items ADD COLUMN {column_name} {ddl}")
 
 
+def _ensure_file_record_columns() -> None:
+    inspector = inspect(engine)
+    try:
+        existing = {column["name"] for column in inspector.get_columns("files")}
+    except Exception:
+        return
+
+    required = {
+        "file_hash": "TEXT",
+    }
+    with engine.begin() as connection:
+        for column_name, ddl in required.items():
+            if column_name in existing:
+                continue
+            connection.exec_driver_sql(f"ALTER TABLE files ADD COLUMN {column_name} {ddl}")
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_files_file_hash ON files (file_hash)"
+        )
+
+
+def _ensure_material_catalog_columns() -> None:
+    inspector = inspect(engine)
+    try:
+        existing = {column["name"] for column in inspector.get_columns("material_catalog")}
+    except Exception:
+        return
+
+    required = {
+        "notes": "TEXT DEFAULT ''",
+    }
+    with engine.begin() as connection:
+        for column_name, ddl in required.items():
+            if column_name in existing:
+                continue
+            connection.exec_driver_sql(f"ALTER TABLE material_catalog ADD COLUMN {column_name} {ddl}")
+
+
 _ensure_material_binding_file_column()
 _ensure_smeta_row_columns()
+_ensure_file_record_columns()
+_ensure_material_catalog_columns()

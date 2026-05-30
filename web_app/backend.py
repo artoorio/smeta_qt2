@@ -48,8 +48,85 @@ def _save_upload(upload: UploadFile, target_dir: str) -> str:
     return path
 
 
-def _df_preview(df: pd.DataFrame, limit: int = 200) -> Dict[str, Any]:
-    preview = df.head(limit).fillna("")
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _combined_file_hash(path: str, materials_path: Optional[str] = None) -> str:
+    digest = hashlib.sha256()
+    for source_path in [path, materials_path]:
+        if not source_path:
+            continue
+        digest.update(_sha256_file(source_path).encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _load_processed_smeta_from_db(file_id: int) -> tuple[FileRecord, pd.DataFrame]:
+    session = SessionLocal()
+    try:
+        file_record = session.query(FileRecord).filter(FileRecord.id == file_id).first()
+        if not file_record:
+            raise HTTPException(status_code=404, detail=f"Смета #{file_id} не найдена в БД.")
+        df = load_dataframe(session, file_id)
+        return file_record, df
+    finally:
+        session.close()
+
+
+def _persist_processed_smeta(
+    df: pd.DataFrame,
+    source_name: str,
+    *,
+    source_hash: Optional[str] = None,
+) -> tuple[int, pd.DataFrame, bool]:
+    session = SessionLocal()
+    try:
+        if source_hash:
+            existing = session.query(FileRecord).filter(FileRecord.file_hash == source_hash).first()
+            if existing:
+                return int(existing.id), load_dataframe(session, int(existing.id)), False
+
+        file_record = FileRecord(
+            orig_name=source_name,
+            saved_path=source_name,
+            processed_path="",
+            status="processed",
+            comment=None,
+            file_hash=source_hash,
+        )
+        session.add(file_record)
+        session.flush()
+        file_id = int(file_record.id)
+        save_dataframe(session, file_id, df)
+        persisted_df = load_dataframe(session, file_id)
+        session.commit()
+        return file_id, persisted_df, True
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def _serialize_processed_file_record(file_record: FileRecord, df: pd.DataFrame) -> Dict[str, Any]:
+    return {
+        "file_id": int(file_record.id),
+        "orig_name": file_record.orig_name or "",
+        "timestamp": file_record.timestamp.isoformat() if file_record.timestamp else None,
+        "status": file_record.status or "",
+        "row_count": int(len(df)),
+    }
+
+
+def _df_preview(df: pd.DataFrame, limit: Optional[int] = 200) -> Dict[str, Any]:
+    # Для detail в режиме process4 нам нужен полный набор строк, иначе
+    # дочерние позиции, которые идут позже в таблице, отсекаются на превью.
+    preview = df.copy() if limit is None else df.head(limit).copy()
+    preview = preview.fillna("")
     visible_columns = [col for col in preview.columns if not str(col).startswith("__meta_")]
     return {
         "columns": visible_columns,
@@ -408,7 +485,7 @@ def _build_process_report_payload(df: pd.DataFrame) -> tuple[str, Dict[str, pd.D
         },
         "ts": datetime.utcnow(),
     }
-    detail_preview = _df_preview(detail)
+    detail_preview = _df_preview(detail, limit=None)
     payload = {
         "report_id": report_id,
         "detail": detail_preview,
@@ -778,11 +855,19 @@ def materials_page(request: Request) -> HTMLResponse:
 def materials_api() -> Dict[str, Any]:
     session = SessionLocal()
     try:
-        _purge_legacy_material_rows(session)
         _migrate_legacy_materials_if_needed(session)
         rows = (
-            session.query(MaterialCatalog.id, MaterialCatalog.source_name, MaterialCatalog.date_added, MaterialCatalog.name,
-                          MaterialCatalog.unit, MaterialCatalog.cost, MaterialCatalog.supplier, MaterialCatalog.region)
+            session.query(
+                MaterialCatalog.id,
+                MaterialCatalog.source_name,
+                MaterialCatalog.date_added,
+                MaterialCatalog.name,
+                MaterialCatalog.unit,
+                MaterialCatalog.cost,
+                MaterialCatalog.supplier,
+                MaterialCatalog.region,
+                MaterialCatalog.notes,
+            )
             .order_by(MaterialCatalog.source_name, MaterialCatalog.name, MaterialCatalog.id)
             .all()
         )
@@ -792,7 +877,7 @@ def materials_api() -> Dict[str, Any]:
             codes_by_material.setdefault(int(material_id), []).append(str(code))
         result = []
         total_materials = 0.0
-        for row_id, source_name, date_added, name, unit, cost, supplier, region in rows:
+        for row_id, source_name, date_added, name, unit, cost, supplier, region, notes in rows:
             numeric_material_cost = pd.to_numeric(pd.Series([cost]), errors="coerce").fillna(0).iloc[0]
             total_materials += float(numeric_material_cost)
             result.append({
@@ -804,9 +889,10 @@ def materials_api() -> Dict[str, Any]:
                 "cost": float(numeric_material_cost),
                 "supplier": supplier,
                 "region": region,
+                "notes": notes or "",
                 "price_codes": ", ".join(codes_by_material.get(int(row_id), [])),
             })
-        columns = ["id", "file", "date_added", "name", "unit", "cost", "supplier", "region", "price_codes"]
+        columns = ["id", "file", "date_added", "name", "unit", "cost", "supplier", "region", "notes", "price_codes"]
         return {
             "columns": columns,
             "rows": jsonable_encoder(result),
@@ -823,7 +909,6 @@ def materials_api() -> Dict[str, Any]:
 def materials_files_api() -> Dict[str, Any]:
     session = SessionLocal()
     try:
-        _purge_legacy_material_rows(session)
         _migrate_legacy_materials_if_needed(session)
         rows = (
             session.query(MaterialCatalog.source_name, func.count(MaterialCatalog.id))
@@ -845,7 +930,6 @@ def materials_files_api() -> Dict[str, Any]:
 def materials_all_files_api() -> Dict[str, Any]:
     session = SessionLocal()
     try:
-        _purge_legacy_material_rows(session)
         _migrate_legacy_materials_if_needed(session)
         rows = session.query(MaterialCatalog.source_name).order_by(MaterialCatalog.source_name).distinct().all()
         return {
@@ -866,7 +950,6 @@ def materials_all_files_api() -> Dict[str, Any]:
 def materials_catalog_api() -> Dict[str, Any]:
     session = SessionLocal()
     try:
-        _purge_legacy_material_rows(session)
         _migrate_legacy_materials_if_needed(session)
         catalog = _fetch_material_catalog(session)
         return {
@@ -885,6 +968,11 @@ class MaterialPayload(BaseModel):
     region: str = ""
     price_codes: str = ""
     file_name: str = "web"
+    notes: str = ""
+
+
+class MaterialUpdatePayload(MaterialPayload):
+    id: int = Field(..., ge=1)
 
 
 class MaterialCleanupPayload(BaseModel):
@@ -930,7 +1018,6 @@ class MaterialLinkDeletePayload(BaseModel):
 def materials_search_api(payload: MaterialSearchPayload) -> Dict[str, Any]:
     session = SessionLocal()
     try:
-        _purge_legacy_material_rows(session)
         _migrate_legacy_materials_if_needed(session)
         catalog = _fetch_material_catalog(session)
         scored_catalog = [_score_material_candidate(candidate, payload) for candidate in catalog]
@@ -998,7 +1085,6 @@ def materials_bindings_api(material_id: Optional[int] = None) -> Dict[str, Any]:
 def materials_bind_api(payload: MaterialBindPayload) -> Dict[str, Any]:
     session = SessionLocal()
     try:
-        _purge_legacy_material_rows(session)
         _migrate_legacy_materials_if_needed(session)
         material = session.query(MaterialCatalog).filter(MaterialCatalog.id == payload.material_id).first()
         if not material:
@@ -1182,6 +1268,7 @@ MATERIAL_IMPORT_ALIASES: Dict[str, List[str]] = {
     "Наименование поставщика": ["Наименование поставщика", "Поставщик", "supplier", "supplier_name"],
     "Регион поставки": ["Регион поставки", "Регион", "region", "delivery_region"],
     "Коды расценок": ["Коды расценок", "Код расценки", "Код", "code", "Коды", "price_codes"],
+    "notes": ["notes", "Примечание", "Комментарий"],
 }
 
 
@@ -1211,7 +1298,7 @@ def _normalize_material_import_frame(frame: pd.DataFrame, file_name: str) -> pd.
     for required in ("Наименование", "Единица измерения", "Стоимость"):
         if required not in df.columns:
             df[required] = ""
-    for optional in ("Наименование поставщика", "Регион поставки", "Коды расценок", "file_name"):
+    for optional in ("Наименование поставщика", "Регион поставки", "Коды расценок", "file_name", "notes"):
         if optional not in df.columns:
             df[optional] = pd.NA
     if "Дата добавления" not in df.columns:
@@ -1223,6 +1310,7 @@ def _normalize_material_import_frame(frame: pd.DataFrame, file_name: str) -> pd.
     df["Стоимость"] = pd.to_numeric(df["Стоимость"], errors="coerce")
     df["Наименование поставщика"] = df["Наименование поставщика"].fillna("").astype(str).str.strip()
     df["Регион поставки"] = df["Регион поставки"].fillna("").astype(str).str.strip()
+    df["notes"] = df["notes"].fillna("").astype(str).str.strip()
     df["Дата добавления"] = df["Дата добавления"].fillna(datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")).astype(str).str.strip()
     df["Коды расценок"] = df["Коды расценок"].apply(lambda value: ", ".join(_split_material_codes(value)))
 
@@ -1245,6 +1333,7 @@ def _store_material_catalog_rows(frame: pd.DataFrame, file_name: str) -> int:
                 cost=float(pd.to_numeric(pd.Series([row.get("Стоимость")]), errors="coerce").fillna(0).iloc[0]),
                 supplier=str(row.get("Наименование поставщика", "")).strip(),
                 region=str(row.get("Регион поставки", "")).strip(),
+                notes=str(row.get("notes", "")).strip(),
                 source_name=str(row.get("file_name", file_name) or file_name).strip() or "web",
                 date_added=datetime.utcnow(),
             )
@@ -1541,10 +1630,39 @@ def add_material(payload: MaterialPayload) -> Dict[str, Any]:
         "Регион поставки": payload.region,
         "Коды расценок": payload.price_codes,
         "file_name": payload.file_name,
+        "notes": payload.notes,
     }])
     normalized = _normalize_material_import_frame(row, payload.file_name or "web")
     inserted = _store_material_catalog_rows(normalized, payload.file_name or "web")
     return {"inserted": inserted, "cost": payload.cost, "file_name": payload.file_name}
+
+
+@app.post("/api/materials/update")
+def update_material(payload: MaterialUpdatePayload) -> Dict[str, Any]:
+    session = SessionLocal()
+    try:
+        row = session.query(MaterialCatalog).filter(MaterialCatalog.id == payload.id).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Материал не найден.")
+        row.name = payload.name.strip()
+        row.unit = payload.unit.strip()
+        row.cost = float(payload.cost)
+        row.supplier = payload.supplier.strip()
+        row.region = payload.region.strip()
+        row.notes = payload.notes.strip()
+        row.source_name = payload.file_name.strip() or row.source_name or "web"
+        row.date_added = row.date_added or datetime.utcnow()
+        session.query(MaterialCodeLink).filter(MaterialCodeLink.material_id == row.id).delete(synchronize_session=False)
+        for code in _split_material_codes(payload.price_codes):
+            session.add(MaterialCodeLink(material_id=row.id, code=code))
+        session.commit()
+        return {
+            "updated": True,
+            "id": row.id,
+            "file_name": row.source_name,
+        }
+    finally:
+        session.close()
 
 
 @app.post("/api/materials/delete")
@@ -1912,50 +2030,167 @@ async def process3_export(
     )
 
 
+@app.get("/api/process4/files")
+def process4_files() -> Dict[str, Any]:
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(FileRecord, func.count(SmetaRow.id).label("row_count"))
+            .join(SmetaRow, SmetaRow.file_id == FileRecord.id)
+            .group_by(FileRecord.id)
+            .order_by(FileRecord.timestamp.desc(), FileRecord.id.desc())
+            .all()
+        )
+        payload_rows = []
+        for file_record, row_count in rows:
+            payload_rows.append(
+                {
+                    "file_id": int(file_record.id),
+                    "orig_name": file_record.orig_name or "",
+                    "timestamp": file_record.timestamp.isoformat() if file_record.timestamp else None,
+                    "status": file_record.status or "",
+                    "row_count": int(row_count or 0),
+                }
+            )
+        return {"rows": payload_rows}
+    finally:
+        session.close()
+
+
+@app.get("/api/process4/load/{file_id}")
+def process4_load(file_id: int) -> Dict[str, Any]:
+    file_record, db_df = _load_processed_smeta_from_db(int(file_id))
+    report_id, frames, payload = _build_process_report_payload(db_df)
+    process4_registry[report_id] = {
+        "kind": "single",
+        "frames": frames,
+        "file_id": int(file_record.id),
+        "created": datetime.utcnow(),
+    }
+    payload["mode"] = "single"
+    payload["source_name"] = file_record.orig_name or f"file-{file_id}"
+    payload["file_id"] = int(file_record.id)
+    payload["loaded_from_db"] = True
+    return payload
+
+
 @app.post("/api/process4")
 async def process4_endpoint(
-    file1: UploadFile = File(...),
+    mode: str = Form("single"),
+    file1: Optional[UploadFile] = File(None),
+    file2: Optional[UploadFile] = File(None),
     materials: Optional[UploadFile] = File(None),
+    file1_db_id: Optional[int] = Form(None),
+    file2_db_id: Optional[int] = Form(None),
 ) -> Dict[str, Any]:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        path = _save_upload(file1, tmpdir)
-        materials_path = _save_upload(materials, tmpdir) if materials else None
+    normalized_mode = "compare" if str(mode).strip().lower() == "compare" else "single"
+
+    def resolve_source(
+        upload: Optional[UploadFile],
+        db_id: Optional[int],
+        default_path: Path,
+        tmpdir: str,
+        source_prefix: str,
+    ) -> tuple[int, pd.DataFrame, str, bool]:
+        if db_id:
+            file_record, db_df = _load_processed_smeta_from_db(int(db_id))
+            return int(file_record.id), db_df, file_record.orig_name or default_path.name, True
+
+        if upload is None:
+            path = str(default_path)
+            source_name = default_path.name
+        else:
+            path = _save_upload(upload, tmpdir)
+            source_name = upload.filename or Path(path).name
         try:
             df = process_smeta(path, materials_path)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
-    session = SessionLocal()
-    try:
-        file_record = FileRecord(
-            orig_name=file1.filename or Path(path).name,
-            saved_path=file1.filename or Path(path).name,
-            processed_path="",
-            status="processed",
-            comment=None,
-        )
-        session.add(file_record)
-        session.flush()
-        file_id = int(file_record.id)
-        save_dataframe(session, file_id, df)
-        db_df = load_dataframe(session, file_id)
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+        source_hash = _combined_file_hash(path, materials_path)
+        file_id, db_df, _ = _persist_processed_smeta(df, source_name, source_hash=source_hash)
+        return file_id, db_df, source_name, False
 
-    report_id, frames, payload = _build_process_report_payload(db_df)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        materials_path = _save_upload(materials, tmpdir) if materials else None
+
+        if normalized_mode == "single":
+            file_id, db_df, source_name, loaded_from_db = resolve_source(
+                file1,
+                file1_db_id,
+                DEFAULT_DEBUG_PROJECT,
+                tmpdir,
+                "process4_single",
+            )
+            report_id, frames, payload = _build_process_report_payload(db_df)
+            process4_registry[report_id] = {
+                "kind": "single",
+                "frames": frames,
+                "file_id": file_id,
+                "created": datetime.utcnow(),
+            }
+            payload["mode"] = "single"
+            payload["source_name"] = source_name
+            payload["file_id"] = file_id
+            payload["saved_file_id"] = file_id
+            payload["loaded_from_db"] = loaded_from_db
+            return payload
+
+        file1_id, df1, proj_name, file1_loaded = resolve_source(
+            file1,
+            file1_db_id,
+            DEFAULT_DEBUG_PROJECT,
+            tmpdir,
+            "process4_compare_project",
+        )
+        file2_id, df2, fact_name, file2_loaded = resolve_source(
+            file2,
+            file2_db_id,
+            DEFAULT_DEBUG_FACT,
+            tmpdir,
+            "process4_compare_fact",
+        )
+
+        try:
+            cmp = SmetaComparator(
+                df1,
+                df2,
+                file1_name=proj_name,
+                file2_name=fact_name,
+                compare_column="Наименование",
+                value_column=["Количество", "Стоимость"],
+                extra_column=["Единица измерения", "Код расценки"],
+                subsection_column="Подраздел",
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    report_id = registry.add(cmp)
+    frames = _prepare_compare_frames(cmp)
     process4_registry[report_id] = {
-        "kind": "single",
+        "kind": "compare",
+        "cmp": cmp,
         "frames": frames,
-        "file_id": file_id,
         "created": datetime.utcnow(),
     }
-    payload["mode"] = "single"
-    payload["source_name"] = file1.filename or Path(path).name
-    return payload
+    return {
+        "report_id": report_id,
+        "mode": "compare",
+        "detail": _df_preview(frames["detail"]),
+        "summary": _df_preview(frames["summary"]),
+        "info": _df_preview(frames["info"]),
+        "files": _df_preview(frames["files"]),
+        "unit_diff": _df_preview(frames["unit_diff"]),
+        "missing": cmp.get_missing_positions(),
+        "used_defaults": file1 is None and file2 is None and not file1_db_id and not file2_db_id,
+        "total_cost": float(
+            pd.to_numeric(cmp.df1.get("Стоимость"), errors="coerce").fillna(0).sum()
+            + pd.to_numeric(cmp.df2.get("Стоимость"), errors="coerce").fillna(0).sum()
+        ),
+        "row_count": _df_preview(frames["detail"])["row_count"],
+        "saved_file_ids": [int(file1_id), int(file2_id)],
+        "loaded_from_db": file1_loaded and file2_loaded,
+    }
 
 
 @app.post("/api/process4/export/{format}")
@@ -1966,6 +2201,48 @@ async def process4_export(
     entry = process4_registry.get(report_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Отчёт Обработка4 не найден или устарел.")
+
+    if entry.get("kind") == "compare":
+        cmp = entry["cmp"]
+        frames = entry["frames"]
+        tmpdir = tempfile.mkdtemp()
+        output_path = os.path.join(tmpdir, f"process4_{format}")
+
+        if format == "html":
+            output_path += ".html"
+            with open(output_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    dataframes_to_readable_html(
+                        [
+                            ("Customer", frames["detail"]),
+                            ("Summary", frames["summary"]),
+                            ("Инфо", frames["info"]),
+                            ("Файлы", frames["files"]),
+                            ("Отличается единица измерения", frames["unit_diff"]),
+                        ],
+                        title="Сравнение смет",
+                        no_wrap_columns={"Файлы": {"Файл"}},
+                    )
+                )
+        elif format == "excel":
+            output_path += ".xlsx"
+            cmp.export_customer_excel(output_path)
+        elif format == "missing":
+            output_path += ".txt"
+            cmp.export_positions_absent_in_d2(output_path)
+        elif format == "diff":
+            output_path += ".xlsx"
+            cmp.export_added_removed_positions(output_path)
+        else:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail="Неизвестный формат экспорта.")
+
+        filename = os.path.basename(output_path)
+        return FileResponse(
+            output_path,
+            filename=filename,
+            background=BackgroundTask(lambda: shutil.rmtree(tmpdir, ignore_errors=True)),
+        )
 
     file_id = int(entry["file_id"])
     frames = entry.get("frames")

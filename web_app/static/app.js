@@ -23,6 +23,7 @@ const state = {
     direction: "desc",
   },
   summaryViewMode: "subsection",
+  materialsRows: [],
 };
 
 const dom = {
@@ -60,10 +61,16 @@ const dom = {
   summaryBySubsection: document.getElementById("summary-by-subsection"),
   summaryBySection: document.getElementById("summary-by-section"),
     compareInfoNote: document.getElementById("compare-info-note"),
-    materialsTable: document.getElementById("materials-table"),
-    materialsForm: document.getElementById("materials-form"),
-    materialsBatchForm: document.getElementById("materials-batch-form"),
-    materialsSummary: document.getElementById("materials-summary"),
+  materialsTable: document.getElementById("materials-table"),
+  materialsForm: document.getElementById("materials-form"),
+  materialsBatchForm: document.getElementById("materials-batch-form"),
+  materialsSummary: document.getElementById("materials-summary"),
+  materialsSaveButton: document.getElementById("materials-save-button"),
+  materialsResetButton: document.getElementById("materials-reset-button"),
+  materialsTemplateDownload: document.getElementById("materials-template-download"),
+  materialsSearchInput: document.getElementById("materials-search-input"),
+  materialsSearchStatus: document.getElementById("materials-search-status"),
+  materialsSearchResults: document.getElementById("materials-search-results"),
   };
 
 const compareSheetOrder = [
@@ -73,6 +80,17 @@ const compareSheetOrder = [
   "compare-unit-diff",
   "compare-files",
 ];
+
+const materialFormState = {
+  materialId: null,
+};
+
+const materialSearchState = {
+  query: "",
+  timer: null,
+  controller: null,
+  loading: false,
+};
 
 const processSheetOrder = [
   "process-table",
@@ -788,6 +806,179 @@ function showMaterialsStatus(message, tone = "info") {
   dom.materialsSummary.dataset.tone = tone;
 }
 
+function showMaterialsSearchStatus(message, tone = "info") {
+  if (!dom.materialsSearchStatus) return;
+  dom.materialsSearchStatus.textContent = message;
+  dom.materialsSearchStatus.dataset.tone = tone;
+}
+
+async function downloadMaterialsTemplate() {
+  if (!dom.materialsTemplateDownload) return;
+  const button = dom.materialsTemplateDownload;
+  button.disabled = true;
+  const previousText = button.textContent;
+  button.textContent = "Скачиваем...";
+  try {
+    const response = await fetch("/api/materials/template");
+    if (!response.ok) {
+      throw new Error(await response.text() || "Не удалось скачать шаблон.");
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("content-disposition") || "";
+    const filename = disposition.match(/filename="?([^";]+)"?/)?.[1] || "materials_template.xlsx";
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  } catch (error) {
+    showMaterialsStatus(error.message, "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = previousText;
+  }
+}
+
+function renderMaterialsSearchResults(rows, loading = false) {
+  if (!dom.materialsSearchResults) return;
+  if (loading) {
+    dom.materialsSearchResults.innerHTML = "<p class='summary'>Ищем материалы...</p>";
+    return;
+  }
+  if (!rows.length) {
+    dom.materialsSearchResults.innerHTML = "<p class='summary'>Совпадения не найдены.</p>";
+    return;
+  }
+  dom.materialsSearchResults.innerHTML = rows.map((row) => {
+    const match = Number(row.match_score || 0).toFixed(2);
+    const reasons = Array.isArray(row.reasons) && row.reasons.length ? row.reasons.join(", ") : "";
+    return `
+      <article class="material-search-result" data-material-id="${escapeText(row.id)}">
+        <div class="material-search-main">
+          <strong>${escapeText(row.name || "")}</strong>
+          <span class="summary">score ${escapeText(match)}</span>
+        </div>
+        <div class="material-search-meta">
+          <span>Ед. изм.: ${escapeText(row.unit || "")}</span>
+          <span>Стоимость: ${escapeText(formatValue("Стоимость", row.cost))}</span>
+          <span>Поставщик: ${escapeText(row.supplier || "—")}</span>
+          <span>Регион: ${escapeText(row.region || "—")}</span>
+          <span>Коды: ${escapeText(row.codes || "—")}</span>
+          ${reasons ? `<span>Причины: ${escapeText(reasons)}</span>` : ""}
+        </div>
+      </article>
+    `;
+  }).join("");
+  dom.materialsSearchResults.querySelectorAll(".material-search-result").forEach((card) => {
+    card.addEventListener("click", () => {
+      const materialId = Number(card.dataset.materialId);
+      const row = rows.find((item) => Number(item.id) === materialId);
+      if (!row) return;
+      fillMaterialsForm({
+        id: row.id,
+        name: row.name,
+        unit: row.unit,
+        cost: row.cost,
+        supplier: row.supplier,
+        region: row.region,
+        price_codes: Array.isArray(row.codes) ? row.codes.join(", ") : (row.price_codes || ""),
+        notes: row.notes,
+        file: row.file || row.source_name,
+      });
+      showMaterialsSearchStatus(`Открыт материал #${row.id} для редактирования.`, "success");
+    });
+  });
+}
+
+async function runMaterialsSearch(query) {
+  const normalized = String(query || "").trim();
+  materialSearchState.query = normalized;
+  if (!dom.materialsSearchResults) return;
+  if (!normalized) {
+    renderMaterialsSearchResults([]);
+    showMaterialsSearchStatus("Начните вводить запрос, чтобы найти материал в базе.", "info");
+    return;
+  }
+  const needle = normalized.toLowerCase();
+  const rows = (Array.isArray(state.materialsRows) ? state.materialsRows : [])
+    .filter((row) => {
+      const haystack = [
+        row.name,
+        row.unit,
+        row.cost,
+        row.supplier,
+        row.region,
+        row.notes,
+        row.price_codes,
+        row.file,
+        row.source_name,
+        row.date_added,
+      ].map((value) => String(value ?? "").toLowerCase()).join(" ");
+      return haystack.includes(needle);
+    })
+    .map((row) => ({
+      ...row,
+      match_score: String(row.name || "").toLowerCase().startsWith(needle) ? 100 : 75,
+      reasons: [],
+    }))
+    .slice(0, 20);
+  renderMaterialsSearchResults(rows, false);
+  showMaterialsSearchStatus(rows.length ? `Найдено: ${rows.length}` : "Совпадения не найдены.", rows.length ? "success" : "warning");
+}
+
+function scheduleMaterialsSearch(query) {
+  if (materialSearchState.timer) {
+    clearTimeout(materialSearchState.timer);
+  }
+  materialSearchState.timer = window.setTimeout(() => {
+    runMaterialsSearch(query);
+  }, 250);
+}
+
+function setMaterialsFormMode(mode) {
+  const isEdit = mode === "edit";
+  if (dom.materialsSaveButton) {
+    dom.materialsSaveButton.textContent = isEdit ? "Сохранить изменения" : "Добавить в базу";
+  }
+}
+
+function resetMaterialsForm() {
+  if (!dom.materialsForm) return;
+  materialFormState.materialId = null;
+  dom.materialsForm.reset();
+  const idField = dom.materialsForm.querySelector("input[name='materialId']");
+  if (idField) idField.value = "";
+  setMaterialsFormMode("add");
+}
+
+function fillMaterialsForm(row) {
+  if (!dom.materialsForm || !row) return;
+  materialFormState.materialId = row.id ? Number(row.id) : null;
+  const setValue = (name, value) => {
+    const field = dom.materialsForm.querySelector(`[name="${name}"]`);
+    if (field) field.value = value ?? "";
+  };
+  setValue("materialId", row.id ?? "");
+  setValue("name", row.name ?? "");
+  setValue("unit", row.unit ?? "");
+  setValue("cost", row.cost ?? "");
+  setValue("supplier", row.supplier ?? "");
+  setValue("region", row.region ?? "");
+  const codesValue = Array.isArray(row.price_codes)
+    ? row.price_codes.join(", ")
+    : (Array.isArray(row.codes) ? row.codes.join(", ") : (row.price_codes ?? ""));
+  setValue("priceCodes", codesValue);
+  setValue("notes", row.notes ?? "");
+  setValue("fileName", row.file ?? row.file_name ?? row.source_name ?? "web");
+  setMaterialsFormMode("edit");
+  if (dom.materialsForm?.scrollIntoView) {
+    dom.materialsForm.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
 async function loadMaterialsView() {
   const container = dom.materialsTable;
   if (!container) return;
@@ -798,6 +989,7 @@ async function loadMaterialsView() {
       throw new Error(await response.text() || "Не удалось загрузить данные.");
     }
     const payload = await response.json();
+      state.materialsRows = Array.isArray(payload.rows) ? payload.rows : [];
       if (dom.materialsSummary && payload.summary) {
         const total = Number(payload.summary.materials_sum || 0).toLocaleString("ru-RU", {
           minimumFractionDigits: 2,
@@ -807,11 +999,19 @@ async function loadMaterialsView() {
       }
       const materialsPayload = {
         columns: (payload.columns || []).filter((column) => column !== "id"),
-        rows: payload.rows || [],
+        rows: state.materialsRows,
       };
       renderTable(container, materialsPayload, "Материалы", {
         mode: "materials",
         rowActions: [{
+          label: "Редактировать",
+          className: "primary",
+          title: "Редактировать материал",
+          onClick: (row) => {
+            fillMaterialsForm(row);
+            showMaterialsStatus(`Материал #${row.id} готов к редактированию.`, "info");
+          },
+        }, {
           label: "Удалить",
           className: "danger",
           title: "Удалить материал",
@@ -829,7 +1029,13 @@ async function loadMaterialsView() {
               }
               const result = await response.json();
               showMaterialsStatus(`Удалена запись из файла ${result.file || "unknown"}.`, "success");
+              if (String(materialFormState.materialId || "") === String(row.id || "")) {
+                resetMaterialsForm();
+              }
               loadMaterialsView();
+      if (materialSearchState.query) {
+        runMaterialsSearch(materialSearchState.query);
+      }
             } catch (error) {
               showMaterialsStatus(error.message, "error");
             }
@@ -845,6 +1051,7 @@ async function handleMaterialsSubmit(event) {
   if (!dom.materialsForm) return;
   event.preventDefault();
   const formData = new FormData(dom.materialsForm);
+  const materialId = String(formData.get("materialId") || "").trim();
     const payload = {
       name: String(formData.get("name") || "").trim(),
       unit: String(formData.get("unit") || "").trim(),
@@ -853,19 +1060,25 @@ async function handleMaterialsSubmit(event) {
       region: String(formData.get("region") || "").trim(),
       price_codes: String(formData.get("priceCodes") || "").trim(),
       file_name: String(formData.get("fileName") || "web").trim() || "web",
+      notes: String(formData.get("notes") || "").trim(),
     };
   try {
-      const response = await fetch("/api/materials/add", {
+      const endpoint = materialId ? "/api/materials/update" : "/api/materials/add";
+      const requestPayload = materialId ? { ...payload, id: Number(materialId) } : payload;
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(requestPayload),
     });
     if (!response.ok) {
       throw new Error(await response.text() || "Не удалось сохранить запись.");
     }
-    showMaterialsStatus("Запись добавлена в базу.", "success");
-    dom.materialsForm.reset();
+    showMaterialsStatus(materialId ? "Запись обновлена." : "Запись добавлена в базу.", "success");
+    resetMaterialsForm();
     loadMaterialsView();
+    if (materialSearchState.query) {
+      runMaterialsSearch(materialSearchState.query);
+    }
   } catch (error) {
     showMaterialsStatus(error.message, "error");
   }
@@ -1267,8 +1480,21 @@ document.addEventListener("DOMContentLoaded", () => {
   if (dom.materialsForm) {
     dom.materialsForm.addEventListener("submit", handleMaterialsSubmit);
   }
+  if (dom.materialsResetButton) {
+    dom.materialsResetButton.addEventListener("click", () => {
+      resetMaterialsForm();
+      showMaterialsStatus("Форма готова для новой записи.", "info");
+    });
+  }
+  if (dom.materialsSearchInput) {
+    dom.materialsSearchInput.addEventListener("input", (event) => {
+      scheduleMaterialsSearch(event.target.value);
+    });
+  }
   if (dom.materialsBatchForm) {
     dom.materialsBatchForm.addEventListener("submit", handleMaterialsBatchSubmit);
   }
+  setMaterialsFormMode("add");
+  showMaterialsSearchStatus("Начните вводить запрос, чтобы найти материал в базе.", "info");
   loadMaterialsView();
 });

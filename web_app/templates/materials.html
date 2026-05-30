@@ -16,7 +16,8 @@
   <section class="card stack">
     <div class="materials-grid">
       <form id="materials-form" class="panel-form">
-        <h2>Добавить материал</h2>
+        <h2>Добавить или редактировать материал</h2>
+        <input type="hidden" name="materialId" value="" />
         <label>
           Наименование
           <input name="name" required placeholder="Материал" />
@@ -42,10 +43,17 @@
           <textarea name="priceCodes" rows="4" placeholder="ФСБЦ-11.1.03.06-0078&#10;ФСБЦ-11.1.03.06-0079"></textarea>
         </label>
         <label>
+          Примечание
+          <textarea name="notes" rows="3" placeholder="Дополнительная информация"></textarea>
+        </label>
+        <label>
           Имя файла-источника
           <input name="fileName" value="web" placeholder="web" />
         </label>
-        <button type="submit" class="primary">Добавить в базу</button>
+        <div class="actions">
+          <button type="submit" class="primary" id="materials-save-button">Добавить в базу</button>
+          <button type="button" class="ghost" id="materials-reset-button">Новая запись</button>
+        </div>
       </form>
 
       <form id="materials-batch-form" class="panel-form">
@@ -58,10 +66,23 @@
           Файл Excel или CSV
           <input name="batchFile" type="file" accept=".xlsx,.xls,.xlsm,.csv" required />
         </label>
-        <p class="summary">Поддерживаются столбцы: наименование, единица измерения, стоимость, наименование поставщика, регион поставки, коды расценок.</p>
-        <button type="submit" class="primary">Импортировать файл</button>
+        <p class="summary">Поддерживаются столбцы: наименование, единица измерения, стоимость, наименование поставщика, регион поставки, коды расценок, примечание.</p>
+        <div class="actions">
+          <button type="submit" class="primary">Импортировать файл</button>
+          <a class="ghost template-download" id="materials-template-download" href="/api/materials/template" download="materials_template.xlsx">Скачать шаблон</a>
+        </div>
       </form>
     </div>
+
+    <section class="card panel-form" style="margin-top: 1rem;">
+      <h2>Инлайн поиск по материалам</h2>
+      <label>
+        Быстрый поиск
+        <input id="materials-search-input" placeholder="Наименование, код, поставщик, регион..." />
+      </label>
+      <p id="materials-search-status" class="summary">Начните вводить запрос, чтобы найти материал в базе.</p>
+      <div id="materials-search-results" class="search-results"></div>
+    </section>
 
     <div id="materials-summary" class="summary"></div>
     <div id="materials-table" class="table-wrapper">
